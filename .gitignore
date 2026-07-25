@@ -1,0 +1,5 @@
+.env
+env.example
+vip_bot.db
+__pycache__/
+implementation_plan.md
