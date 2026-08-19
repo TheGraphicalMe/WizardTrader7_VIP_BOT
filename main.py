@@ -56,21 +56,30 @@ async def lifespan(app: FastAPI):
     await _bot_app.initialize()
     await _bot_app.start()
 
-    # Register Telegram webhook so Telegram knows where to send updates
+    # Register Telegram webhook or start polling if local
     webhook_url = f"{APP_BASE_URL}/webhook/telegram"
-    try:
-        await _bot_app.bot.set_webhook(
-            url=webhook_url, 
-            secret_token=WEBHOOK_SECRET_TOKEN, 
-            drop_pending_updates=False  # Do not drop updates on cold boot
-        )
-        logger.info(f"✅ Telegram webhook set → {webhook_url}")
-    except Exception as e:
-        logger.warning(f"Could not set Telegram webhook (will work in polling mode locally): {e}")
+    if APP_BASE_URL.startswith("http://localhost") or APP_BASE_URL.startswith("http://127.0.0.1"):
+        logger.info("Local environment detected. Falling back to polling mode...")
+        await _bot_app.bot.delete_webhook()
+        await _bot_app.updater.start_polling(drop_pending_updates=True)
+    else:
+        try:
+            await _bot_app.bot.set_webhook(
+                url=webhook_url, 
+                secret_token=WEBHOOK_SECRET_TOKEN, 
+                drop_pending_updates=False
+            )
+            logger.info(f"✅ Telegram webhook set → {webhook_url}")
+        except Exception as e:
+            logger.warning(f"Could not set Telegram webhook. Falling back to polling mode. Error: {e}")
+            await _bot_app.bot.delete_webhook()
+            await _bot_app.updater.start_polling(drop_pending_updates=True)
 
     logger.info("✅ Server ready.")
     yield
 
+    if _bot_app.updater and _bot_app.updater.running:
+        await _bot_app.updater.stop()
     await _bot_app.stop()
     await _bot_app.shutdown()
 

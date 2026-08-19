@@ -24,14 +24,15 @@ WINPRO_API_KEY = os.getenv("WINPRO_API_KEY", "")
 # Fixie Proxy for external API requests
 FIXIE_URL       = os.getenv("FIXIE_URL", "")
 
-# Canonical list of supported broker slugs
-SUPPORTED_BROKERS = [b for b, secret in BROKER_WEBHOOK_SECRETS.items() if secret or b == "xm"]
+# Canonical list of supported broker slugs (Exness and Delta temporarily removed)
+SUPPORTED_BROKERS = ["xm"]
 if VANTAGE_USER_ID and VANTAGE_SECRET:
     SUPPORTED_BROKERS.append("vantage")
-# if WINPRO_API_KEY:
-#     SUPPORTED_BROKERS.append("winpro")
+if WINPRO_API_KEY:
+    SUPPORTED_BROKERS.append("winpro")
 
 # ── App ───────────────────────────────────────────────────────────────────────
 APP_BASE_URL  = os.getenv("APP_BASE_URL", "http://localhost:8000")
 DATABASE_URL  = os.getenv("DATABASE_URL", "sqlite:///./vip_bot.db")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
+ALLOWED_USERS  = os.getenv("ALLOWED_USERS", "")

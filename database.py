@@ -56,6 +56,17 @@ class BrokerAccount(Base):
     claimed_at             = Column(DateTime, nullable=True)
 
 
+class TelegramUser(Base):
+    """
+    Stores users who have verified their phone number.
+    """
+    __tablename__ = "telegram_users"
+
+    telegram_id = Column(String, primary_key=True)
+    phone_number = Column(String, nullable=False)
+    created_at = Column(DateTime, default=get_ist_time)
+
+
 class TelegramMember(Base):
     """
     One row per person added to the VIP Telegram group.

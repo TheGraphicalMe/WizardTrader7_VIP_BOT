@@ -8,7 +8,7 @@ import uuid
 import logging
 from datetime import datetime, timedelta
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -17,15 +17,18 @@ from telegram.ext import (
     ConversationHandler,
     ContextTypes,
     filters,
+    TypeHandler,
+    ApplicationHandlerStop,
 )
 from telegram.error import TelegramError
 
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_GROUP_ID, SUPPORTED_BROKERS
-from database import SessionLocal, BrokerAccount, TelegramMember, PendingVerification
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_GROUP_ID, SUPPORTED_BROKERS, ALLOWED_USERS
+from database import SessionLocal, BrokerAccount, TelegramMember, PendingVerification, TelegramUser
 
 logger = logging.getLogger(__name__)
 
 # ── Conversation states ───────────────────────────────────────────────────────
+REQUEST_PHONE   = 0
 CHOOSE_BROKER   = 1
 ENTER_ACCOUNT   = 2
 
@@ -41,29 +44,134 @@ def _group_id():
 # HANDLERS
 # ═════════════════════════════════════════════════════════════════════════════
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if not update.message or not update.effective_user:
-        return CHOOSE_BROKER
-    user = update.effective_user
+async def whitelist_middleware(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_user:
+        return
 
+    # If ALLOWED_USERS is not set, allow everyone (default behavior)
+    if not ALLOWED_USERS:
+        return
+
+    user_id = str(update.effective_user.id)
+    username = update.effective_user.username.lower() if update.effective_user.username else ""
+    
+    allowed_list = [x.strip().lower() for x in ALLOWED_USERS.split(",") if x.strip()]
+
+    if user_id not in allowed_list and username not in allowed_list:
+        if update.message:
+            await update.message.reply_text(
+                "🚧 *Under Maintenance*\n\n"
+                "This bot is currently undergoing scheduled maintenance. Please try again later.",
+                parse_mode="Markdown"
+            )
+        elif update.callback_query:
+            await update.callback_query.answer(
+                "Bot is currently under maintenance. Please try again later.", 
+                show_alert=True
+            )
+        raise ApplicationHandlerStop()
+
+async def ask_to_choose_broker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     buttons, row = [], []
+    
+    # ⚠️ ACTION REQUIRED: Replace these placeholder IDs with your actual Custom Emoji IDs
+    broker_custom_emojis = {
+        "vantage": "6064274490857103869", # Example ID, replace with real Vantage emoji ID
+        "xm": "6061996135260628880",      # Example ID, replace with real XM emoji ID
+        "winpro": "6062062303526790930",  # Example ID, replace with real Winpro emoji ID
+        "exness": "6062115647020606488",  # Example ID, replace with real Exness emoji ID
+        "delta": "6062270334562740009"    # Example ID, replace with real Delta emoji ID
+    }
+    
     for broker in SUPPORTED_BROKERS:
-        row.append(InlineKeyboardButton(broker.capitalize(), callback_data=f"broker:{broker}"))
-        if len(row) == 2:
+        emoji_id = broker_custom_emojis.get(broker.lower(), "")
+        
+        button_kwargs = {
+            "text": f" {broker.capitalize()}", 
+            "callback_data": f"broker:{broker}"
+        }
+        
+        if emoji_id:
+            button_kwargs["icon_custom_emoji_id"] = emoji_id
+            
+        row.append(InlineKeyboardButton(**button_kwargs))
+        
+        # Display 1 button per row exactly like the screenshot
+        if len(row) == 1:
             buttons.append(row)
             row = []
     if row:
         buttons.append(row)
 
     await update.message.reply_text(
-        f"👋 Welcome, {user.first_name}!\n\n"
-        "To join our *Active Traders Community*, I need to verify your broker account.\n\n"
         "📌 *Which broker did you open an account with?*\n"
         "_Only accounts opened through our affiliate link are eligible._",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
     return CHOOSE_BROKER
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not update.message or not update.effective_user:
+        return REQUEST_PHONE
+    user = update.effective_user
+
+    db = SessionLocal()
+    try:
+        db_user = db.query(TelegramUser).filter(TelegramUser.telegram_id == str(user.id)).first()
+        if not db_user:
+            keyboard = [[KeyboardButton("📱 Share Phone Number", request_contact=True)]]
+            reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+            await update.message.reply_text(
+                f"👋 Welcome, {user.first_name}!\n\n"
+                "To join our *Active Traders Community*, we first need to verify your phone number.\n\n"
+                "Please tap the button below to share your phone number securely.",
+                parse_mode="Markdown",
+                reply_markup=reply_markup
+            )
+            return REQUEST_PHONE
+    finally:
+        db.close()
+
+    await update.message.reply_text(f"👋 Welcome back, {user.first_name}!")
+    return await ask_to_choose_broker(update, context)
+
+
+async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not update.message or not update.effective_user:
+        return REQUEST_PHONE
+
+    if not update.message.contact:
+        await update.message.reply_text("Please use the '📱 Share Phone Number' button below to share your contact.")
+        return REQUEST_PHONE
+        
+    user = update.effective_user
+    contact = update.message.contact
+    
+    if contact.user_id != user.id:
+        await update.message.reply_text("❌ Please share your own contact, not someone else's.")
+        return REQUEST_PHONE
+        
+    phone_number = contact.phone_number
+    
+    db = SessionLocal()
+    try:
+        db_user = TelegramUser(telegram_id=str(user.id), phone_number=phone_number)
+        db.add(db_user)
+        db.commit()
+    except Exception as e:
+        logger.error(f"Error saving user phone: {e}")
+        db.rollback()
+    finally:
+        db.close()
+        
+    await update.message.reply_text(
+        "✅ Phone number verified successfully!",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    
+    return await ask_to_choose_broker(update, context)
 
 
 async def choose_broker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -75,13 +183,40 @@ async def choose_broker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     broker = query.data.split(":")[1]
     context.user_data["broker"] = broker
 
-    await query.edit_message_text(
+    # Delete the previous text message to replace it with a photo message
+    try:
+        await query.message.delete()
+    except TelegramError:
+        pass
+
+    caption = (
         f"✅ Broker selected: *{broker.capitalize()}*\n\n"
-        f"Now please enter your *{broker.capitalize()} Account ID*.\n\n"
-        "📋 You can find your Account ID in your broker dashboard after logging in.\n\n"
-        "_Type your Account ID and press Send:_",
-        parse_mode="Markdown",
+        f"Now please enter your *{broker.capitalize()} Account ID (UID)*.\n\n"
+        "📋 Check the image above to see where to find your Account ID in your broker dashboard.\n\n"
+        "_Type your Account ID and press Send:_"
     )
+
+    import os
+    image_path = f"assets/{broker}_uid.png"
+    if not os.path.exists(image_path):
+        image_path = f"assets/{broker}_uid.jpg"
+    
+    if os.path.exists(image_path):
+        with open(image_path, "rb") as photo:
+            await context.bot.send_photo(
+                chat_id=query.message.chat_id,
+                photo=photo,
+                caption=caption,
+                parse_mode="Markdown"
+            )
+    else:
+        # Fallback if image is missing
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=caption + f"\n\n*(Note: Add an image at '{image_path}' to show the UID guide here)*",
+            parse_mode="Markdown"
+        )
+        
     return ENTER_ACCOUNT
 
 
@@ -150,52 +285,52 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                 ).first()
 
         # ── 1.6 Dynamic check for Winpro ──────────────────────────────────────
-        # if not account and broker == "winpro":
-        #     await update.message.reply_text("⏳ Checking Winpro systems for your account and deposits, please wait...")
-        #     from winpro import verify_winpro_account
-        #     is_valid, reason = await verify_winpro_account(account_id, db)
-        #     
-        #     if is_valid:
-        #         account = db.query(BrokerAccount).filter(
-        #             BrokerAccount.account_id == account_id,
-        #             BrokerAccount.broker     == broker,
-        #         ).first()
-        #     else:
-        #         if reason == "not_under_ib":
-        #             await update.message.reply_text(
-        #                 "❌ *Verification Failed: Account Not Found*\n\n"
-        #                 f"We could not find account `{account_id}` registered under our affiliate link.\n\n"
-        #                 "**What to do:**\n"
-        #                 "Please ensure you created your Winpro account using our exact referral link. "
-        #                 "If you already had a Winpro account, you must open a new one using our link to join the Active Traders Community.\n\n"
-        #                 "Send /start to try again.",
-        #                 parse_mode="Markdown"
-        #             )
-        #         elif reason.startswith("insufficient_deposit"):
-        #             current_deposit = reason.split(":")[1]
-        #             await update.message.reply_text(
-        #                 "❌ *Verification Failed: Insufficient Deposits*\n\n"
-        #                 f"Your account `{account_id}` is correctly registered under us, but your total successful deposits are currently **${current_deposit}**.\n\n"
-        #                 "**Requirement:** You need a cumulative deposit of **at least $50** to join the Active Traders Community.\n\n"
-        #                 "Once you have deposited the required amount, wait a few minutes for it to be approved, then try again.\n\n"
-        #                 "Send /start to try again.",
-        #                 parse_mode="Markdown"
-        #             )
-        #         elif reason == "invalid_format":
-        #             await update.message.reply_text(
-        #                 "❌ *Verification Failed: Invalid Format*\n\n"
-        #                 "Winpro Account IDs should only contain numbers.\n\n"
-        #                 "Send /start to try again.",
-        #                 parse_mode="Markdown"
-        #             )
-        #         else:
-        #             await update.message.reply_text(
-        #                 "❌ *Verification Failed*\n\n"
-        #                 "An error occurred while checking your Winpro account. Please try again later or contact support.\n\n"
-        #                 "Send /start to try again.",
-        #                 parse_mode="Markdown"
-        #             )
-        #         return ConversationHandler.END
+        if not account and broker == "winpro":
+            await update.message.reply_text("⏳ Checking Winpro systems for your account and deposits, please wait...")
+            from winpro import verify_winpro_account
+            is_valid, reason = await verify_winpro_account(account_id, db)
+            
+            if is_valid:
+                account = db.query(BrokerAccount).filter(
+                    BrokerAccount.account_id == account_id,
+                    BrokerAccount.broker     == broker,
+                ).first()
+            else:
+                if reason == "not_under_ib":
+                    await update.message.reply_text(
+                        "❌ *Verification Failed: Account Not Found*\n\n"
+                        f"We could not find account `{account_id}` registered under our affiliate link.\n\n"
+                        "**What to do:**\n"
+                        "Please ensure you created your Winpro account using our exact referral link. "
+                        "If you already had a Winpro account, you must open a new one using our link to join the Active Traders Community.\n\n"
+                        "Send /start to try again.",
+                        parse_mode="Markdown"
+                    )
+                elif reason.startswith("insufficient_deposit"):
+                    current_deposit = reason.split(":")[1]
+                    await update.message.reply_text(
+                        "❌ *Verification Failed: Insufficient Deposits*\n\n"
+                        f"Your account `{account_id}` is correctly registered under us, but your total successful deposits are currently **${current_deposit}**.\n\n"
+                        "**Requirement:** You need a cumulative deposit of **at least $50** to join the Active Traders Community.\n\n"
+                        "Once you have deposited the required amount, wait a few minutes for it to be approved, then try again.\n\n"
+                        "Send /start to try again.",
+                        parse_mode="Markdown"
+                    )
+                elif reason == "invalid_format":
+                    await update.message.reply_text(
+                        "❌ *Verification Failed: Invalid Format*\n\n"
+                        "Winpro Account IDs should only contain numbers.\n\n"
+                        "Send /start to try again.",
+                        parse_mode="Markdown"
+                    )
+                else:
+                    await update.message.reply_text(
+                        "❌ *Verification Failed*\n\n"
+                        "An error occurred while checking your Winpro account. Please try again later or contact support.\n\n"
+                        "Send /start to try again.",
+                        parse_mode="Markdown"
+                    )
+                return ConversationHandler.END
 
         if not account:
             await update.message.reply_text(
@@ -362,12 +497,19 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def build_app() -> Application:
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
+    if ALLOWED_USERS:
+        app.add_handler(TypeHandler(Update, whitelist_middleware), group=-1)
+
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("start", start),
             MessageHandler(filters.Regex("(?i)^start$"), start)
         ],
         states={
+            REQUEST_PHONE: [
+                MessageHandler(filters.CONTACT, receive_phone),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_phone)
+            ],
             CHOOSE_BROKER: [
                 CallbackQueryHandler(choose_broker, pattern="^broker:")
             ],
