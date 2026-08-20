@@ -22,7 +22,7 @@ from telegram.ext import (
 )
 from telegram.error import TelegramError
 
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_GROUP_ID, SUPPORTED_BROKERS, ALLOWED_USERS
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_GROUP_ID, SUPPORTED_BROKERS, ALLOWED_USERS, BROKER_AFFILIATE_INFO
 from database import SessionLocal, BrokerAccount, TelegramMember, PendingVerification, TelegramUser
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 REQUEST_PHONE   = 0
 CHOOSE_BROKER   = 1
 ENTER_ACCOUNT   = 2
+
+# Cache for photo file_ids to speed up sending
+BROKER_PHOTO_FILE_IDS = {}
 
 # ── Helper: parse group ID ────────────────────────────────────────────────────
 def _group_id():
@@ -202,13 +205,23 @@ async def choose_broker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         image_path = f"assets/{broker}_uid.jpg"
     
     if os.path.exists(image_path):
-        with open(image_path, "rb") as photo:
+        if broker in BROKER_PHOTO_FILE_IDS:
             await context.bot.send_photo(
                 chat_id=query.message.chat_id,
-                photo=photo,
+                photo=BROKER_PHOTO_FILE_IDS[broker],
                 caption=caption,
                 parse_mode="Markdown"
             )
+        else:
+            with open(image_path, "rb") as photo:
+                msg = await context.bot.send_photo(
+                    chat_id=query.message.chat_id,
+                    photo=photo,
+                    caption=caption,
+                    parse_mode="Markdown"
+                )
+                if msg and msg.photo:
+                    BROKER_PHOTO_FILE_IDS[broker] = msg.photo[-1].file_id
     else:
         # Fallback if image is missing
         await context.bot.send_message(
@@ -224,6 +237,11 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     if not update.message or not update.message.text or not update.effective_user:
         return ConversationHandler.END
     account_id = update.message.text.strip()
+
+    if account_id.startswith("#"):
+        await update.message.reply_text("❌ Please enter your Account ID (UID) without the '#' symbol.")
+        return ENTER_ACCOUNT
+
     broker     = context.user_data.get("broker", "")
     user       = update.effective_user
     telegram_id = str(user.id)
@@ -261,9 +279,9 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                 return ConversationHandler.END
                 
             requests = context.user_data.get('vantage_requests', [])
-            requests = [t for t in requests if now - t < timedelta(minutes=15)]
+            requests = [t for t in requests if now - t < timedelta(hours=24)]
             
-            if len(requests) >= 3:
+            if len(requests) >= 10:
                 context.user_data['vantage_timeout_until'] = now + timedelta(hours=3)
                 await update.message.reply_text(
                     "❌ *Account not found or Timeout Active*\n\n"
@@ -297,13 +315,18 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                 ).first()
             else:
                 if reason == "not_under_ib":
+                    info = BROKER_AFFILIATE_INFO.get("winpro", {})
+                    link = info.get("link", "N/A")
+                    code = info.get("code", "N/A")
                     await update.message.reply_text(
-                        "❌ *Verification Failed: Account Not Found*\n\n"
-                        f"We could not find account `{account_id}` registered under our affiliate link.\n\n"
-                        "**What to do:**\n"
-                        "Please ensure you created your Winpro account using our exact referral link. "
-                        "If you already had a Winpro account, you must open a new one using our link to join the Active Traders Community.\n\n"
-                        "Send /start to try again.",
+                        "❌ *Winpro Verification Failed*\n\n"
+                        "You are not registered under our affiliate link.\n"
+                        "Please register using the official link below:\n\n"
+                        f"📌 *Partner Link:* {link}\n\n"
+                        f"🔹 *Partner Code:* `{code}`\n\n"
+                        "After completing the registration or partner code change, please join our bot:\n"
+                        "🤖 @SwappySyndicateBot\n\n"
+                        "If you need any assistance, feel free to contact us.",
                         parse_mode="Markdown"
                     )
                 elif reason.startswith("insufficient_deposit"):
@@ -333,18 +356,28 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                 return ConversationHandler.END
 
         if not account:
+            info = BROKER_AFFILIATE_INFO.get(broker.lower(), {})
+            b_name = info.get("name", broker.capitalize())
+            link = info.get("link", "N/A")
+            code = info.get("code", "N/A")
+
+            reply_markup = None
+            if broker.lower() == "vantage":
+                reply_markup = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✉️ Change Partner (Email Format)", callback_data="vantage_change_partner")]
+                ])
+
             await update.message.reply_text(
-                "❌ *Account not found*\n\n"
-                f"We couldn't find account `{account_id}` for *{broker.capitalize()}* in our system.\n\n"
-                "This usually means:\n"
-                "• You opened your account *before* clicking our affiliate link\n"
-                "• You typed the Account ID incorrectly\n\n"
-                "✅ *What to do:*\n"
-                "1. Double-check your Account ID in your broker dashboard\n"
-                "2. If you just signed up, wait 5 minutes and try again\n"
-                "3. Contact support if the issue continues\n\n"
-                "Send /start to try again.",
+                f"❌ *{b_name} Verification Failed*\n\n"
+                "You are not registered under our affiliate link.\n"
+                "Please register using the official link below:\n\n"
+                f"📌 *Partner Link:* {link}\n\n"
+                f"🔹 *Partner Code:* `{code}`\n\n"
+                "After completing the registration or partner code change, please join our bot:\n"
+                "🤖 @SwappySyndicateBot\n\n"
+                "If you need any assistance, feel free to contact us.",
                 parse_mode="Markdown",
+                reply_markup=reply_markup,
             )
             return ConversationHandler.END
 
@@ -476,6 +509,42 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
+async def vantage_change_partner_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query:
+        await query.answer()
+        mail_text = (
+            "📧 *Vantage Partner Change Mail Format*\n\n"
+            "If you already have a Vantage account, send an email with the following details:\n\n"
+            "📬 *To:* `india.care@vantagemarkets.com`\n"
+            "📑 *CC:* `jahnvi.ahuja@vantagemarkets.com`\n"
+            "📌 *Subject:* `Request to Map Account under IB 23143035`\n\n"
+            "📝 *Email Body (Tap to copy):*\n"
+            "```\n"
+            "Hello Team,\n\n"
+            "I want to work with Name: Harshit Patel Ram Krishna Patel\n"
+            "IB : 23143035 \n"
+            "Kindly map my account under him as soon as possible.\n"
+            "```\n\n"
+            "Once sent, wait for Vantage support to confirm your account mapping, then try verifying again with /start."
+        )
+        mailto_url = (
+            "mailto:india.care@vantagemarkets.com"
+            "?cc=jahnvi.ahuja@vantagemarkets.com"
+            "&subject=Request%20to%20Map%20Account%20under%20IB%2023143035"
+            "&body=Hello%20Team%2C%0A%0AI%20want%20to%20work%20with%20Name%3A%20Harshit%20Patel%20Ram%20Krishna%20Patel%0AIB%20%3A%2023143035%20%0AKindly%20map%20my%20account%20under%20him%20as%20soon%20as%20possible."
+        )
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✉️ Open Email App", url=mailto_url)]
+        ])
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=mail_text,
+            parse_mode="Markdown",
+            reply_markup=keyboard,
+        )
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
@@ -529,5 +598,6 @@ def build_app() -> Application:
 
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CallbackQueryHandler(vantage_change_partner_handler, pattern="^vantage_change_partner$"))
 
     return app
