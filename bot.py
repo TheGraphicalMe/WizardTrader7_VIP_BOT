@@ -200,9 +200,10 @@ async def choose_broker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     )
 
     import os
-    image_path = f"assets/{broker}_uid.png"
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    image_path = os.path.join(base_dir, "assets", f"{broker}_uid.png")
     if not os.path.exists(image_path):
-        image_path = f"assets/{broker}_uid.jpg"
+        image_path = os.path.join(base_dir, "assets", f"{broker}_uid.jpg")
     
     if os.path.exists(image_path):
         if broker in BROKER_PHOTO_FILE_IDS:
@@ -223,10 +224,15 @@ async def choose_broker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                 if msg and msg.photo:
                     BROKER_PHOTO_FILE_IDS[broker] = msg.photo[-1].file_id
     else:
-        # Fallback if image is missing
+        # Fallback text if image is not present
+        text_only = (
+            f"✅ Broker selected: *{broker.capitalize()}*\n\n"
+            f"Now please enter your *{broker.capitalize()} Account ID (UID)*.\n\n"
+            "_Type your Account ID and press Send:_"
+        )
         await context.bot.send_message(
             chat_id=query.message.chat_id,
-            text=caption + f"\n\n*(Note: Add an image at '{image_path}' to show the UID guide here)*",
+            text=text_only,
             parse_mode="Markdown"
         )
         
@@ -325,7 +331,7 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                         f"📌 *Partner Link:* {link}\n\n"
                         f"🔹 *Partner Code:* `{code}`\n\n"
                         "After completing the registration or partner code change, please join our bot:\n"
-                        "🤖 @SwappySyndicateBot\n\n"
+                        "🤖 @WT7_VIP_Community_Bot\n\n"
                         "If you need any assistance, feel free to contact us.",
                         parse_mode="Markdown"
                     )
@@ -374,7 +380,7 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                 f"📌 *Partner Link:* {link}\n\n"
                 f"🔹 *Partner Code:* `{code}`\n\n"
                 "After completing the registration or partner code change, please join our bot:\n"
-                "🤖 @SwappySyndicateBot\n\n"
+                "🤖 @WT7_VIP_Community_Bot\n\n"
                 "If you need any assistance, feel free to contact us.",
                 parse_mode="Markdown",
                 reply_markup=reply_markup,
@@ -528,20 +534,10 @@ async def vantage_change_partner_handler(update: Update, context: ContextTypes.D
             "```\n\n"
             "Once sent, wait for Vantage support to confirm your account mapping, then try verifying again with /start."
         )
-        mailto_url = (
-            "mailto:india.care@vantagemarkets.com"
-            "?cc=jahnvi.ahuja@vantagemarkets.com"
-            "&subject=Request%20to%20Map%20Account%20under%20IB%2023143035"
-            "&body=Hello%20Team%2C%0A%0AI%20want%20to%20work%20with%20Name%3A%20Harshit%20Patel%20Ram%20Krishna%20Patel%0AIB%20%3A%2023143035%20%0AKindly%20map%20my%20account%20under%20him%20as%20soon%20as%20possible."
-        )
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✉️ Open Email App", url=mailto_url)]
-        ])
         await context.bot.send_message(
             chat_id=query.message.chat_id,
             text=mail_text,
             parse_mode="Markdown",
-            reply_markup=keyboard,
         )
 
 
