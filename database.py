@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, String, DateTime, Boolean, BigInteger, Integer, Text
+from sqlalchemy import create_engine, Column, String, DateTime, Boolean, BigInteger, Integer, Text, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from datetime import datetime, timedelta
 from config import DATABASE_URL
@@ -58,12 +58,14 @@ class BrokerAccount(Base):
 
 class TelegramUser(Base):
     """
-    Stores users who have verified their phone number.
+    Stores onboarding details for users who have verified their phone number.
     """
     __tablename__ = "telegram_users"
 
     telegram_id = Column(String, primary_key=True)
     phone_number = Column(String, nullable=False)
+    full_name = Column(String, nullable=True)
+    account_size = Column(String, nullable=True)
     created_at = Column(DateTime, default=get_ist_time)
 
 
@@ -108,6 +110,20 @@ class PendingVerification(Base):
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+
+    # create_all does not add columns to an existing Render/Postgres database.
+    # Add these onboarding fields once so deployments work with existing users too.
+    existing_columns = {column["name"] for column in inspect(engine).get_columns("telegram_users")}
+    missing_columns = {
+        "full_name": "VARCHAR",
+        "account_size": "VARCHAR",
+    }
+    with engine.begin() as connection:
+        for column_name, column_type in missing_columns.items():
+            if column_name not in existing_columns:
+                connection.execute(text(
+                    f"ALTER TABLE telegram_users ADD COLUMN {column_name} {column_type}"
+                ))
 
 
 def get_db():

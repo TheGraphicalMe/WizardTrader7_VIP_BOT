@@ -28,9 +28,11 @@ from database import SessionLocal, BrokerAccount, TelegramMember, PendingVerific
 logger = logging.getLogger(__name__)
 
 # ── Conversation states ───────────────────────────────────────────────────────
-REQUEST_PHONE   = 0
-CHOOSE_BROKER   = 1
-ENTER_ACCOUNT   = 2
+REQUEST_FULL_NAME     = 0
+REQUEST_ACCOUNT_SIZE  = 1
+REQUEST_PHONE         = 2
+CHOOSE_BROKER         = 3
+ENTER_ACCOUNT         = 4
 
 # Cache for photo file_ids to speed up sending
 BROKER_PHOTO_FILE_IDS = {}
@@ -117,28 +119,61 @@ async def ask_to_choose_broker(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.message or not update.effective_user:
-        return REQUEST_PHONE
+        return REQUEST_FULL_NAME
     user = update.effective_user
 
     db = SessionLocal()
     try:
         db_user = db.query(TelegramUser).filter(TelegramUser.telegram_id == str(user.id)).first()
         if not db_user:
-            keyboard = [[KeyboardButton("📱 Share Phone Number", request_contact=True)]]
-            reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
             await update.message.reply_text(
                 f"👋 Welcome, {user.first_name}!\n\n"
-                "To join our *Active Traders Community*, we first need to verify your phone number.\n\n"
-                "Please tap the button below to share your phone number securely.",
-                parse_mode="Markdown",
-                reply_markup=reply_markup
+                "Before we verify your phone number, please enter your *full name*.",
+                parse_mode="Markdown"
             )
-            return REQUEST_PHONE
+            return REQUEST_FULL_NAME
     finally:
         db.close()
 
     await update.message.reply_text(f"👋 Welcome back, {user.first_name}!")
     return await ask_to_choose_broker(update, context)
+
+
+async def receive_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not update.message or not update.message.text:
+        return REQUEST_FULL_NAME
+
+    full_name = update.message.text.strip()
+    if len(full_name) < 2 or len(full_name) > 100:
+        await update.message.reply_text("Please enter your full name (between 2 and 100 characters).")
+        return REQUEST_FULL_NAME
+
+    context.user_data["onboarding_full_name"] = full_name
+    await update.message.reply_text(
+        "What is your trading account size?\n\n"
+        "For example: `$1,000`, `$10K`, or `₹50,000`.",
+        parse_mode="Markdown"
+    )
+    return REQUEST_ACCOUNT_SIZE
+
+
+async def receive_account_size(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not update.message or not update.message.text:
+        return REQUEST_ACCOUNT_SIZE
+
+    account_size = update.message.text.strip()
+    if not account_size or len(account_size) > 50:
+        await update.message.reply_text("Please enter a valid account size (up to 50 characters).")
+        return REQUEST_ACCOUNT_SIZE
+
+    context.user_data["onboarding_account_size"] = account_size
+    keyboard = [[KeyboardButton("📱 Share Phone Number", request_contact=True)]]
+    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    await update.message.reply_text(
+        "Thanks. Now please tap the button below to share your phone number securely.",
+        reply_markup=reply_markup,
+    )
+    return REQUEST_PHONE
 
 
 async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -157,17 +192,38 @@ async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         return REQUEST_PHONE
         
     phone_number = contact.phone_number
+    full_name = context.user_data.get("onboarding_full_name")
+    account_size = context.user_data.get("onboarding_account_size")
+
+    # The phone button is only presented after both onboarding questions.
+    if not full_name or not account_size:
+        await update.message.reply_text("Please send /start to complete registration.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
     
     db = SessionLocal()
+    saved = False
     try:
-        db_user = TelegramUser(telegram_id=str(user.id), phone_number=phone_number)
+        db_user = TelegramUser(
+            telegram_id=str(user.id),
+            phone_number=phone_number,
+            full_name=full_name,
+            account_size=account_size,
+        )
         db.add(db_user)
         db.commit()
+        saved = True
     except Exception as e:
         logger.error(f"Error saving user phone: {e}")
         db.rollback()
     finally:
         db.close()
+
+    if not saved:
+        await update.message.reply_text("We couldn't save your registration. Please share your phone number again.")
+        return REQUEST_PHONE
+
+    context.user_data.pop("onboarding_full_name", None)
+    context.user_data.pop("onboarding_account_size", None)
         
     await update.message.reply_text(
         "✅ Phone number verified successfully!",
@@ -331,7 +387,7 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                         f"📌 *Partner Link:* {link}\n\n"
                         f"🔹 *Partner Code:* `{code}`\n\n"
                         "After completing the registration or partner code change, please join our bot:\n"
-                        "🤖 @WT7_VIP_Community_Bot\n\n"
+                        "🤖 @WT7\\_VIP\\_Community\\_Bot\n\n"
                         "If you need any assistance, feel free to contact us.",
                         parse_mode="Markdown"
                     )
@@ -380,7 +436,7 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                 f"📌 *Partner Link:* {link}\n\n"
                 f"🔹 *Partner Code:* `{code}`\n\n"
                 "After completing the registration or partner code change, please join our bot:\n"
-                "🤖 @WT7_VIP_Community_Bot\n\n"
+                "🤖 @WT7\\_VIP\\_Community\\_Bot\n\n"
                 "If you need any assistance, feel free to contact us.",
                 parse_mode="Markdown",
                 reply_markup=reply_markup,
@@ -571,6 +627,12 @@ def build_app() -> Application:
             MessageHandler(filters.Regex("(?i)^start$"), start)
         ],
         states={
+            REQUEST_FULL_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_full_name)
+            ],
+            REQUEST_ACCOUNT_SIZE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_account_size)
+            ],
             REQUEST_PHONE: [
                 MessageHandler(filters.CONTACT, receive_phone),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_phone)
