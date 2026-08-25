@@ -48,8 +48,8 @@ BROKER_AFFILIATE_INFO = {
 SUPPORTED_BROKERS = ["xm"]
 if VANTAGE_USER_ID and VANTAGE_SECRET:
     SUPPORTED_BROKERS.append("vantage")
-if WINPRO_API_KEY:
-    SUPPORTED_BROKERS.append("winpro")
+# if WINPRO_API_KEY:
+#     SUPPORTED_BROKERS.append("winpro")
 
 # ── App ───────────────────────────────────────────────────────────────────────
 APP_BASE_URL  = os.getenv("APP_BASE_URL", "http://localhost:8000")
