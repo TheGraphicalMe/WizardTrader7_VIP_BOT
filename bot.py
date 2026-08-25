@@ -150,8 +150,8 @@ async def receive_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     context.user_data["onboarding_full_name"] = full_name
     await update.message.reply_text(
-        "What is your trading account size?\n\n"
-        "For example: `$1,000`, `$10K`, or `₹50,000`.",
+        "What is your trading account size in USD?\n\n"
+        "For example: `$100` or `$1000`.",
         parse_mode="Markdown"
     )
     return REQUEST_ACCOUNT_SIZE
