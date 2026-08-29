@@ -296,6 +296,7 @@ async def choose_broker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 
 async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    batch_button = InlineKeyboardButton("🎓 Join Class (Basic To Advance Batch)", url="https://www.tradingschoolbywizardtrader.com/live-batch")
     if not update.message or not update.message.text or not update.effective_user:
         return ConversationHandler.END
     account_id = update.message.text.strip()
@@ -316,7 +317,8 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         await update.message.reply_text(
             "❌ *Account not found or Timeout Active*\n\n"
             "Your account UID is wrong, or you must try after 3 hours if you have recently registered.",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[batch_button]])
         )
         return ConversationHandler.END
 
@@ -336,7 +338,8 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                 await update.message.reply_text(
                     "❌ *Account not found or Timeout Active*\n\n"
                     "Your account UID is wrong, or you must try after 3 hours if you have recently registered.",
-                    parse_mode="Markdown"
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([[batch_button]])
                 )
                 return ConversationHandler.END
                 
@@ -348,7 +351,8 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                 await update.message.reply_text(
                     "❌ *Account not found or Timeout Active*\n\n"
                     "Your account UID is wrong, or you must try after 3 hours if you have recently registered.",
-                    parse_mode="Markdown"
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([[batch_button]])
                 )
                 return ConversationHandler.END
                 
@@ -389,7 +393,8 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                         "After completing the registration or partner code change, please join our bot:\n"
                         "🤖 @WT7\\_VIP\\_Community\\_Bot\n\n"
                         "If you need any assistance, feel free to contact us.",
-                        parse_mode="Markdown"
+                        parse_mode="Markdown",
+                        reply_markup=InlineKeyboardMarkup([[batch_button]])
                     )
                 elif reason.startswith("insufficient_deposit"):
                     current_deposit = reason.split(":")[1]
@@ -399,21 +404,24 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                         "**Requirement:** You need a cumulative deposit of **at least $50** to join the Active Traders Community.\n\n"
                         "Once you have deposited the required amount, wait a few minutes for it to be approved, then try again.\n\n"
                         "Send /start to try again.",
-                        parse_mode="Markdown"
+                        parse_mode="Markdown",
+                        reply_markup=InlineKeyboardMarkup([[batch_button]])
                     )
                 elif reason == "invalid_format":
                     await update.message.reply_text(
                         "❌ *Verification Failed: Invalid Format*\n\n"
                         "Winpro Account IDs should only contain numbers.\n\n"
                         "Send /start to try again.",
-                        parse_mode="Markdown"
+                        parse_mode="Markdown",
+                        reply_markup=InlineKeyboardMarkup([[batch_button]])
                     )
                 else:
                     await update.message.reply_text(
                         "❌ *Verification Failed*\n\n"
                         "An error occurred while checking your Winpro account. Please try again later or contact support.\n\n"
                         "Send /start to try again.",
-                        parse_mode="Markdown"
+                        parse_mode="Markdown",
+                        reply_markup=InlineKeyboardMarkup([[batch_button]])
                     )
                 return ConversationHandler.END
 
@@ -426,8 +434,11 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             reply_markup = None
             if broker.lower() == "vantage":
                 reply_markup = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✉️ Change Partner (Email Format)", callback_data="vantage_change_partner")]
+                    [InlineKeyboardButton("✉️ Change Partner (Email Format)", callback_data="vantage_change_partner")],
+                    [batch_button]
                 ])
+            else:
+                reply_markup = InlineKeyboardMarkup([[batch_button]])
 
             await update.message.reply_text(
                 f"❌ *{b_name} Verification Failed*\n\n"
@@ -452,6 +463,7 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                 "If you think this is a mistake, contact support.\n\n"
                 "Send /start to try again.",
                 parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[batch_button]])
             )
             return ConversationHandler.END
 
@@ -473,9 +485,12 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                 msg_text += "\n\n📝 *Please fill the form below for FREE Smart AI Lite access:*"
                 existing.form_link_sent = True
                 db.commit()
-                reply_markup = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("📝 Smart AI Lite Form", url="https://forms.gle/suoKtSqeRh1KasBj7")
-                ]])
+                reply_markup = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📝 Smart AI Lite Form", url="https://forms.gle/suoKtSqeRh1KasBj7")],
+                    [batch_button]
+                ])
+            else:
+                reply_markup = InlineKeyboardMarkup([[batch_button]])
 
             await update.message.reply_text(
                 msg_text,
@@ -503,6 +518,7 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                 "Please try again in a few minutes or contact support.\n\n"
                 "Send /start to try again.",
                 parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[batch_button]])
             )
             return ConversationHandler.END
 
@@ -538,7 +554,8 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         # ── 6. Send the invite link ────────────────────────────────────────────
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🚀 Join Active Traders Community", url=invite.invite_link)],
-            [InlineKeyboardButton("📝 Smart AI Lite Form", url="https://forms.gle/suoKtSqeRh1KasBj7")]
+            [InlineKeyboardButton("📝 Smart AI Lite Form", url="https://forms.gle/suoKtSqeRh1KasBj7")],
+            [batch_button]
         ])
 
         await update.message.reply_text(
@@ -556,7 +573,8 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         logger.error(f"Error in enter_account: {e}", exc_info=True)
         await update.message.reply_text(
             "❌ An unexpected error occurred. Please try again or contact support.\n\n"
-            "Send /start to try again."
+            "Send /start to try again.",
+            reply_markup=InlineKeyboardMarkup([[batch_button]])
         )
     finally:
         db.close()
