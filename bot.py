@@ -22,7 +22,7 @@ from telegram.ext import (
 )
 from telegram.error import TelegramError
 
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_GROUP_ID, SUPPORTED_BROKERS, ALLOWED_USERS, BROKER_AFFILIATE_INFO
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_GROUP_ID, SUPPORTED_BROKERS, ALLOWED_USERS, BROKER_AFFILIATE_INFO, SMART_AI_FORM_URL
 from database import SessionLocal, BrokerAccount, TelegramMember, PendingVerification, TelegramUser
 
 logger = logging.getLogger(__name__)
@@ -486,7 +486,7 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                 existing.form_link_sent = True
                 db.commit()
                 reply_markup = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📝 Smart AI Lite Form", url="https://forms.gle/suoKtSqeRh1KasBj7")],
+                    [InlineKeyboardButton("📝 Smart AI Lite Form", url=SMART_AI_FORM_URL)],
                     [batch_button]
                 ])
             else:
@@ -554,7 +554,7 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         # ── 6. Send the invite link ────────────────────────────────────────────
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🚀 Join Active Traders Community", url=invite.invite_link)],
-            [InlineKeyboardButton("📝 Smart AI Lite Form", url="https://forms.gle/suoKtSqeRh1KasBj7")],
+            [InlineKeyboardButton("📝 Smart AI Lite Form", url=SMART_AI_FORM_URL)],
             [batch_button]
         ])
 

@@ -25,6 +25,9 @@ WINPRO_API_KEY = os.getenv("WINPRO_API_KEY", "")
 # Fixie Proxy for external API requests
 FIXIE_URL       = os.getenv("FIXIE_URL", "")
 
+# ── Form Links ──────────────────────────────────────────────────────────────
+SMART_AI_FORM_URL = os.getenv("SMART_AI_FORM_URL", "https://forms.gle/KVspdfgTRdcGXQLL9")
+
 # ── Partner Links & Codes ───────────────────────────────────────────────────
 BROKER_AFFILIATE_INFO = {
     "winpro": {
