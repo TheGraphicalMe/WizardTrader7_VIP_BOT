@@ -6,6 +6,7 @@ from sqlalchemy.exc import IntegrityError
 
 from config import VANTAGE_USER_ID, VANTAGE_SECRET, FIXIE_URL
 from database import BrokerAccount
+from google_sheets import trigger_sheet_sync
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,18 @@ async def verify_vantage_account(account_id: str, db: Session) -> bool:
         try:
             db.commit()
             new_accounts_added += 1
+            
+            # Filter the data to only send userId, account, and date. Rest are empty.
+            filtered_acc = {
+                "userId": acc.get("userId", ""),
+                "account": acc.get("account", ""),
+                "accountType": "",
+                "platform": "",
+                "currency": "",
+                "date": acc.get("date", ""),
+                "upperId": ""
+            }
+            trigger_sheet_sync("vantage", acc_id, "", extra_data=filtered_acc)
         except IntegrityError:
             db.rollback() # Account already exists, skip
             

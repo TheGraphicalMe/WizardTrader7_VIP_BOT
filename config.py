@@ -8,6 +8,9 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_GROUP_ID  = os.getenv("TELEGRAM_GROUP_ID", "")
 
+# ── Google Sheets Webhook ───────────────────────────────────────────────────
+GOOGLE_SHEETS_WEBHOOK_URL = os.getenv("GOOGLE_SHEETS_WEBHOOK_URL", "")
+
 # ── Per-Broker Postback Secrets ───────────────────────────────────────────────
 BROKER_WEBHOOK_SECRETS: dict[str, str] = {
     "exness":  os.getenv("EXNESS_WEBHOOK_SECRET",  ""),

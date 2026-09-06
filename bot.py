@@ -150,8 +150,8 @@ async def receive_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     context.user_data["onboarding_full_name"] = full_name
     await update.message.reply_text(
-        "What is your trading account size in USD?\n\n"
-        "For example: `$100` or `$1000`.",
+        "What is your trading account size in USD (numbers only)?\n\n"
+        "For example: `100` or `1000`.",
         parse_mode="Markdown"
     )
     return REQUEST_ACCOUNT_SIZE
@@ -162,8 +162,18 @@ async def receive_account_size(update: Update, context: ContextTypes.DEFAULT_TYP
         return REQUEST_ACCOUNT_SIZE
 
     account_size = update.message.text.strip()
-    if not account_size or len(account_size) > 50:
-        await update.message.reply_text("Please enter a valid account size (up to 50 characters).")
+    if not account_size.isdigit():
+        await update.message.reply_text(
+            "❌ Please enter numbers only for your account size in USD (e.g. `100` or `1000` without `$` or symbols).",
+            parse_mode="Markdown"
+        )
+        return REQUEST_ACCOUNT_SIZE
+
+    if int(account_size) <= 0:
+        await update.message.reply_text(
+            "❌ Please enter a valid account size greater than 0.",
+            parse_mode="Markdown"
+        )
         return REQUEST_ACCOUNT_SIZE
 
     context.user_data["onboarding_account_size"] = account_size
@@ -248,12 +258,30 @@ async def choose_broker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     except TelegramError:
         pass
 
-    caption = (
-        f"✅ Broker selected: *{broker.capitalize()}*\n\n"
-        f"Now please enter your *{broker.capitalize()} Account ID (UID)*.\n\n"
-        "📋 Check the image above to see where to find your Account ID in your broker dashboard.\n\n"
-        "_Type your Account ID and press Send:_"
-    )
+    if broker.lower() == "winpro":
+        caption = (
+            "✅ Broker selected: *Winpro*\n\n"
+            "Now please enter your *Winpro MT5 Account ID*.\n\n"
+            "📋 Check the image above to see where to find your MT5 Account Number in your Winpro dashboard.\n\n"
+            "_Type your MT5 Account ID and press Send:_"
+        )
+        text_only = (
+            "✅ Broker selected: *Winpro*\n\n"
+            "Now please enter your *Winpro MT5 Account ID*.\n\n"
+            "_Type your MT5 Account ID and press Send:_"
+        )
+    else:
+        caption = (
+            f"✅ Broker selected: *{broker.capitalize()}*\n\n"
+            f"Now please enter your *{broker.capitalize()} Account ID (UID)*.\n\n"
+            "📋 Check the image above to see where to find your Account ID in your broker dashboard.\n\n"
+            "_Type your Account ID and press Send:_"
+        )
+        text_only = (
+            f"✅ Broker selected: *{broker.capitalize()}*\n\n"
+            f"Now please enter your *{broker.capitalize()} Account ID (UID)*.\n\n"
+            "_Type your Account ID and press Send:_"
+        )
 
     import os
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -281,11 +309,6 @@ async def choose_broker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                     BROKER_PHOTO_FILE_IDS[broker] = msg.photo[-1].file_id
     else:
         # Fallback text if image is not present
-        text_only = (
-            f"✅ Broker selected: *{broker.capitalize()}*\n\n"
-            f"Now please enter your *{broker.capitalize()} Account ID (UID)*.\n\n"
-            "_Type your Account ID and press Send:_"
-        )
         await context.bot.send_message(
             chat_id=query.message.chat_id,
             text=text_only,
@@ -301,13 +324,16 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         return ConversationHandler.END
     account_id = update.message.text.strip()
 
-    if account_id.startswith("#"):
-        await update.message.reply_text("❌ Please enter your Account ID (UID) without the '#' symbol.")
-        return ENTER_ACCOUNT
-
-    broker     = context.user_data.get("broker", "")
-    user       = update.effective_user
+    broker      = context.user_data.get("broker", "")
+    user        = update.effective_user
     telegram_id = str(user.id)
+
+    if account_id.startswith("#"):
+        if broker.lower() == "winpro":
+            await update.message.reply_text("❌ Please enter your MT5 Account ID without the '#' symbol.")
+        else:
+            await update.message.reply_text("❌ Please enter your Account ID (UID) without the '#' symbol.")
+        return ENTER_ACCOUNT
 
     if not broker:
         await update.message.reply_text("⚠️ Something went wrong. Please start over by sending /start")
@@ -400,7 +426,7 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                     current_deposit = reason.split(":")[1]
                     await update.message.reply_text(
                         "❌ *Verification Failed: Insufficient Deposits*\n\n"
-                        f"Your account `{account_id}` is correctly registered under us, but your total successful deposits are currently **${current_deposit}**.\n\n"
+                        f"Your MT5 account `{account_id}` is correctly registered under us, but your total successful deposits are currently **${current_deposit}**.\n\n"
                         "**Requirement:** You need a cumulative deposit of **at least $50** to join the Active Traders Community.\n\n"
                         "Once you have deposited the required amount, wait a few minutes for it to be approved, then try again.\n\n"
                         "Send /start to try again.",
@@ -410,7 +436,7 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                 elif reason == "invalid_format":
                     await update.message.reply_text(
                         "❌ *Verification Failed: Invalid Format*\n\n"
-                        "Winpro Account IDs should only contain numbers.\n\n"
+                        "Winpro MT5 Account IDs should only contain numbers.\n\n"
                         "Send /start to try again.",
                         parse_mode="Markdown",
                         reply_markup=InlineKeyboardMarkup([[batch_button]])

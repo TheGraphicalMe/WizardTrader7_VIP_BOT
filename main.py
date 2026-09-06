@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
 
@@ -17,6 +18,7 @@ from database import init_db, get_db, BrokerAccount, TelegramMember, RawWebhookE
 from bot import build_app
 import hashlib
 import json
+from google_sheets import trigger_sheet_sync
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,6 +28,23 @@ logger = logging.getLogger(__name__)
 
 # Build bot application once at module level
 _bot_app = build_app()
+
+async def winpro_sync_task():
+    """Background task to sync Winpro accounts every 3 hours."""
+    from winpro import sync_all_winpro_accounts
+    from database import SessionLocal
+    while True:
+        try:
+            db = SessionLocal()
+            try:
+                await sync_all_winpro_accounts(db)
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"Error in Winpro sync background task: {e}")
+        
+        # Sleep for 3 hours (10800 seconds)
+        await asyncio.sleep(10800)
 
 
 # ─── Startup validation ───────────────────────────────────────────────────────
@@ -56,6 +75,9 @@ async def lifespan(app: FastAPI):
     await _bot_app.initialize()
     await _bot_app.start()
 
+    # Start the Winpro background sync task
+    sync_task = asyncio.create_task(winpro_sync_task())
+
     # Register Telegram webhook or start polling if local
     webhook_url = f"{APP_BASE_URL}/webhook/telegram"
     if APP_BASE_URL.startswith("http://localhost") or APP_BASE_URL.startswith("http://127.0.0.1"):
@@ -82,6 +104,9 @@ async def lifespan(app: FastAPI):
         await _bot_app.updater.stop()
     await _bot_app.stop()
     await _bot_app.shutdown()
+    
+    # Cancel the background task on shutdown
+    sync_task.cancel()
 
 
 app = FastAPI(
@@ -129,7 +154,7 @@ async def telegram_webhook(request: Request):
 
 from sqlalchemy.exc import IntegrityError
 
-async def _store_account(broker: str, account_id: str, secret: str, email: str, db: Session):
+async def _store_account(broker: str, account_id: str, secret: str, email: str, db: Session, extra_data: dict = None):
     """Shared logic for GET and POST broker postbacks."""
     broker = (broker or "").strip().lower()
 
@@ -168,6 +193,7 @@ async def _store_account(broker: str, account_id: str, secret: str, email: str, 
         return {"status": "already_exists", "broker": broker, "account_id": account_id}
         
     logger.info(f"✅ [{broker}] New account stored: {account_id}")
+    trigger_sheet_sync(broker, account_id, email, extra_data=extra_data)
     return {"status": "success", "broker": broker, "account_id": account_id}
 
 
@@ -221,6 +247,7 @@ async def broker_postback_get(request: Request, db: Session = Depends(get_db)):
             secret     = p.get("secret", ""),
             email      = p.get("email", ""),
             db         = db,
+            extra_data = dict(p)
         )
     except HTTPException as e:
         logger.error(f"Broker GET webhook validation failed: {e.detail}")
@@ -279,6 +306,7 @@ async def broker_postback_post(request: Request, db: Session = Depends(get_db)):
             secret     = inferred_secret,
             email      = body.get("email")      or p.get("email", ""),
             db         = db,
+            extra_data = body or dict(p)
         )
     except HTTPException as e:
         logger.error(f"Broker POST webhook validation failed: {e.detail}")
