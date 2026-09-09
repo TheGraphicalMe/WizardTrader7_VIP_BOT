@@ -63,12 +63,12 @@ async def verify_vantage_account(account_id: str, db: Session) -> bool:
         
     tz = timezone(timedelta(hours=3))
     end_dt = datetime.now(tz)
-    start_dt = end_dt - timedelta(days=30)
+    start_dt = end_dt - timedelta(days=365)
     
     start_time_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
     end_time_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-    logger.info(f"Querying Vantage API for past 30 days accounts...")
+    logger.info(f"Querying Vantage API for past 365 days accounts...")
     accounts = await fetch_account_data(start_time_str, end_time_str)
     
     # API returns accounts as ints or strings.
