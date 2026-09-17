@@ -78,6 +78,18 @@ async def lifespan(app: FastAPI):
     # Start the Winpro background sync task
     sync_task = asyncio.create_task(winpro_sync_task())
 
+    # Start the daily inactivity kicks (01:00 IST), run one broker after another
+    import xm
+    from kick_scheduler import inactivity_scheduler
+    kick_jobs = [(xm.JOB_NAME, xm.run_xm_inactivity_check)]
+    if "vantage" in SUPPORTED_BROKERS:
+        import vantage
+        kick_jobs.append((vantage.JOB_NAME, vantage.run_vantage_inactivity_check))
+    if "exness" in SUPPORTED_BROKERS:
+        import exness
+        kick_jobs.append((exness.JOB_NAME, exness.run_exness_inactivity_check))
+    kick_task = asyncio.create_task(inactivity_scheduler(_bot_app.bot, kick_jobs))
+
     # Register Telegram webhook or start polling if local
     webhook_url = f"{APP_BASE_URL}/webhook/telegram"
     if APP_BASE_URL.startswith("http://localhost") or APP_BASE_URL.startswith("http://127.0.0.1"):
@@ -105,8 +117,9 @@ async def lifespan(app: FastAPI):
     await _bot_app.stop()
     await _bot_app.shutdown()
     
-    # Cancel the background task on shutdown
+    # Cancel the background tasks on shutdown
     sync_task.cancel()
+    kick_task.cancel()
 
 
 app = FastAPI(
@@ -184,7 +197,13 @@ async def _store_account(broker: str, account_id: str, secret: str, email: str, 
         logger.info(f"[{broker}] {account_id} already in DB — skipped.")
         return {"status": "already_exists", "broker": broker, "account_id": account_id}
 
-    db.add(BrokerAccount(account_id=account_id, broker=broker, client_email=email))
+    # XM and Exness postbacks carry the MT5 login; Vantage carries the client UID.
+    is_uid = broker == "vantage"
+    db.add(BrokerAccount(
+        account_id=account_id, broker=broker, client_email=email,
+        client_uid=account_id if is_uid else None,
+        mt5_id=None if is_uid else account_id,
+    ))
     try:
         db.commit()
     except IntegrityError:
@@ -193,7 +212,8 @@ async def _store_account(broker: str, account_id: str, secret: str, email: str, 
         return {"status": "already_exists", "broker": broker, "account_id": account_id}
         
     logger.info(f"✅ [{broker}] New account stored: {account_id}")
-    trigger_sheet_sync(broker, account_id, email, extra_data=extra_data)
+    trigger_sheet_sync(broker, account_id, email, extra_data=extra_data,
+                       client_uid=account_id if is_uid else "", mt5_id="" if is_uid else account_id)
     return {"status": "success", "broker": broker, "account_id": account_id}
 
 
@@ -343,6 +363,8 @@ async def list_accounts(broker: str | None = None, db: Session = Depends(get_db)
             "broker":        a.broker,
             "account_id":    a.account_id,
             "email":         a.client_email,
+            "client_uid":    a.client_uid,
+            "mt5_id":        a.mt5_id,
             "registered_at": a.registered_at,
             "is_claimed":    a.is_claimed,
             "claimed_by":    a.claimed_by_telegram_id,
@@ -365,6 +387,8 @@ async def list_members(broker: str | None = None, db: Session = Depends(get_db),
             "telegram_username": m.telegram_username,
             "full_name":         m.full_name,
             "account_id":        m.account_id,
+            "client_uid":        m.client_uid,
+            "mt5_id":            m.mt5_id,
             "joined_at":         m.joined_at,
             "is_active":         m.is_active,
         }
@@ -389,10 +413,39 @@ async def manually_add_account(
         BrokerAccount.broker     == broker,
     ).first():
         return {"status": "already_exists"}
-    db.add(BrokerAccount(account_id=account_id, broker=broker, client_email=email))
+    is_uid = broker == "vantage"
+    db.add(BrokerAccount(
+        account_id=account_id, broker=broker, client_email=email,
+        client_uid=account_id if is_uid else None,
+        mt5_id=None if is_uid else account_id,
+    ))
     db.commit()
     logger.info(f"Manually added: broker={broker} account={account_id}")
     return {"status": "added", "broker": broker, "account_id": account_id}
+
+
+@app.post("/admin/xm-inactivity-check")
+async def trigger_xm_inactivity_check(dry_run: bool = True, admin: str = Depends(verify_admin)):
+    """Run the XM inactivity check now. Dry run by default; pass ?dry_run=false to actually remove members."""
+    from xm import run_xm_inactivity_check
+    report = await run_xm_inactivity_check(_bot_app.bot, dry_run=dry_run)
+    return {"dry_run": dry_run, "report": report}
+
+
+@app.post("/admin/vantage-inactivity-check")
+async def trigger_vantage_inactivity_check(dry_run: bool = True, admin: str = Depends(verify_admin)):
+    """Run the Vantage inactivity check now. Dry run by default; pass ?dry_run=false to actually remove members."""
+    from vantage import run_vantage_inactivity_check
+    report = await run_vantage_inactivity_check(_bot_app.bot, dry_run=dry_run)
+    return {"dry_run": dry_run, "report": report}
+
+
+@app.post("/admin/exness-inactivity-check")
+async def trigger_exness_inactivity_check(dry_run: bool = True, admin: str = Depends(verify_admin)):
+    """Run the Exness inactivity check now. Dry run by default; pass ?dry_run=false to actually remove members."""
+    from exness import run_exness_inactivity_check
+    report = await run_exness_inactivity_check(_bot_app.bot, dry_run=dry_run)
+    return {"dry_run": dry_run, "report": report}
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -425,5 +478,8 @@ async def root():
             "admin_accounts":   "GET  /admin/accounts?broker=exness",
             "admin_members":    "GET  /admin/members",
             "manual_add":       "POST /admin/add-account?broker=delta&account_id=Z",
+            "xm_inactivity":    "POST /admin/xm-inactivity-check?dry_run=true",
+            "vantage_inactivity": "POST /admin/vantage-inactivity-check?dry_run=true",
+            "exness_inactivity": "POST /admin/exness-inactivity-check?dry_run=true",
         },
     }

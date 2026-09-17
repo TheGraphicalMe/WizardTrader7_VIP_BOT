@@ -41,9 +41,10 @@ async def verify_winpro_account(account_id: str, db: Session) -> tuple[bool, str
             items = ib_data.get("data", {}).get("items", [])
             
             # Verify the exact account_id is in the returned list
-            belongs_to_ib = any(str(item.get("mt5_id")) == str(account_id) for item in items)
-            if not belongs_to_ib:
+            matched = next((i for i in items if str(i.get("mt5_id")) == str(account_id)), None)
+            if not matched:
                 return False, "not_under_ib"
+            client_uid = str(matched.get("client_id") or "") or None
 
         except Exception as e:
             logger.error(f"Error checking IB status on Winpro API: {e}")
@@ -96,12 +97,16 @@ async def verify_winpro_account(account_id: str, db: Session) -> tuple[bool, str
         db_account = BrokerAccount(
             account_id=str(account_id),
             broker="winpro",
-            client_email=client_email or client_name
+            client_email=client_email or client_name,
+            client_uid=client_uid,
+            mt5_id=str(account_id),
         )
         db.add(db_account)
         try:
             db.commit()
-            trigger_sheet_sync("winpro", str(account_id), client_email or client_name, extra_data={"client_name": client_name})
+            trigger_sheet_sync("winpro", str(account_id), client_email or client_name,
+                               extra_data={"client_name": client_name, "client_id": client_uid or ""},
+                               client_uid=client_uid or "", mt5_id=str(account_id))
         except IntegrityError:
             db.rollback()
         return True, "success"
@@ -149,13 +154,16 @@ async def sync_all_winpro_accounts(db: Session):
                     db_account = BrokerAccount(
                         account_id=account_id,
                         broker="winpro",
-                        client_email=email_to_save
+                        client_email=email_to_save,
+                        client_uid=str(item.get("client_id") or "") or None,
+                        mt5_id=account_id,
                     )
                     db.add(db_account)
                     try:
                         db.commit()
                         logger.info(f"✅ [winpro] Automatically synced new account: {account_id}")
-                        trigger_sheet_sync("winpro", account_id, email_to_save, extra_data=item)
+                        trigger_sheet_sync("winpro", account_id, email_to_save, extra_data=item,
+                                           client_uid=str(item.get("client_id") or ""), mt5_id=account_id)
                     except IntegrityError:
                         db.rollback()
                         

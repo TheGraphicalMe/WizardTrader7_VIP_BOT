@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from config import DATABASE_URL
 
 _connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-engine        = create_engine(DATABASE_URL, connect_args=_connect_args)
+engine        = create_engine(DATABASE_URL, connect_args=_connect_args, pool_pre_ping=True)
 SessionLocal  = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 class Base(DeclarativeBase):
@@ -46,6 +46,8 @@ class BrokerAccount(Base):
     broker        = Column(String,   primary_key=True)  # 'exness','delta','xm'
 
     client_email  = Column(String,   nullable=True)
+    client_uid    = Column(String,   nullable=True)   # broker's client ID, when the broker has one
+    mt5_id        = Column(String,   nullable=True)   # trading account number
     registered_at = Column(DateTime, default=get_ist_time)
 
     # Claimed = someone has already used this account to get an invite link
@@ -83,11 +85,15 @@ class TelegramMember(Base):
 
     telegram_username = Column(String,   nullable=True)   # @username — can change, stored for display
     full_name         = Column(String,   nullable=True)
-    account_id        = Column(String,   nullable=False)
+    account_id        = Column(String,   nullable=False)   # kept as a backup of the verification ID
+    client_uid        = Column(String,   nullable=True)
+    mt5_id            = Column(String,   nullable=True)
     joined_at         = Column(DateTime, default=get_ist_time)
-    last_trade_date   = Column(DateTime, nullable=True)   # for future 60-day kick feature
+    last_trade_date   = Column(DateTime, nullable=True)   # latest XM trade seen by the inactivity check
     is_active         = Column(Boolean,  default=True)
     form_link_sent    = Column(Boolean,  default=False)
+    # Highest inactivity reminder already sent (e.g. 20/25/29); 0 once they trade again.
+    inactivity_reminder_stage = Column(Integer, default=0)
 
 
 class PendingVerification(Base):
@@ -102,28 +108,50 @@ class PendingVerification(Base):
     telegram_id    = Column(String,   index=True)
     broker         = Column(String)
     account_id     = Column(String)
-    invite_link    = Column(String)                        # the actual t.me/joinchat/... link
+    client_uid     = Column(String,   nullable=True)
+    mt5_id         = Column(String,   nullable=True)
+    invite_link    = Column(String)                      # the actual t.me/joinchat/... link
     created_at     = Column(DateTime, default=get_ist_time)
     expires_at     = Column(DateTime)
     is_used        = Column(Boolean,  default=False)
+
+
+class ScheduledJobRun(Base):
+    """
+    One row per scheduled job run. The composite primary key makes claiming a run
+    atomic, so restarts or multiple workers never run the same day's job twice.
+    """
+    __tablename__ = "scheduled_job_runs"
+
+    job_name   = Column(String, primary_key=True)
+    run_date   = Column(String, primary_key=True)   # IST date of the slot, YYYY-MM-DD
+    started_at = Column(DateTime, default=get_ist_time)
 
 
 def init_db():
     Base.metadata.create_all(bind=engine)
 
     # create_all does not add columns to an existing Render/Postgres database.
-    # Add these onboarding fields once so deployments work with existing users too.
-    existing_columns = {column["name"] for column in inspect(engine).get_columns("telegram_users")}
-    missing_columns = {
-        "full_name": "VARCHAR",
-        "account_size": "VARCHAR",
+    # Add newer fields once so deployments work with existing rows too.
+    # client_uid / mt5_id were added by hand with scripts/fill_ids_from_apis.py, not on deploy.
+    added_columns = {
+        "telegram_users": {
+            "full_name": "VARCHAR",
+            "account_size": "VARCHAR",
+        },
+        "telegram_members": {
+            "inactivity_reminder_stage": "INTEGER DEFAULT 0",
+        },
     }
+    inspector = inspect(engine)
     with engine.begin() as connection:
-        for column_name, column_type in missing_columns.items():
-            if column_name not in existing_columns:
-                connection.execute(text(
-                    f"ALTER TABLE telegram_users ADD COLUMN {column_name} {column_type}"
-                ))
+        for table_name, columns in added_columns.items():
+            existing_columns = {column["name"] for column in inspector.get_columns(table_name)}
+            for column_name, column_type in columns.items():
+                if column_name not in existing_columns:
+                    connection.execute(text(
+                        f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
+                    ))
 
 
 def get_db():

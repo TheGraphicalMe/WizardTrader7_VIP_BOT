@@ -4,6 +4,7 @@ bot.py
 Telegram bot that guides users through verification and sends a one-time invite link.
 """
 
+import re
 import uuid
 import logging
 from datetime import datetime, timedelta
@@ -33,11 +34,20 @@ REQUEST_ACCOUNT_SIZE  = 1
 REQUEST_PHONE         = 2
 CHOOSE_BROKER         = 3
 ENTER_ACCOUNT         = 4
+ENTER_EMAIL           = 5
+
+EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 
 # Cache for photo file_ids to speed up sending
 BROKER_PHOTO_FILE_IDS = {}
 
 # ── Helper: parse group ID ────────────────────────────────────────────────────
+def _account_filter(broker: str, entered_id: str):
+    """Users type their client UID for Vantage and their MT5 number everywhere else."""
+    column = BrokerAccount.client_uid if broker.lower() == "vantage" else BrokerAccount.mt5_id
+    return column == entered_id
+
+
 def _group_id():
     try:
         return int(TELEGRAM_GROUP_ID)
@@ -270,6 +280,19 @@ async def choose_broker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             "Now please enter your *Winpro MT5 Account ID*.\n\n"
             "_Type your MT5 Account ID and press Send:_"
         )
+    elif broker.lower() == "exness":
+        caption = (
+            "✅ Broker selected: *Exness*\n\n"
+            "Now please enter your *Exness MT5 Account Number*.\n\n"
+            "📋 Check the image above to see where to find your account number in your Exness Personal Area.\n\n"
+            "_Type your MT5 Account Number and press Send:_"
+        )
+        text_only = (
+            "✅ Broker selected: *Exness*\n\n"
+            "Now please enter your *Exness MT5 Account Number* "
+            "(you can find it under *My accounts* in your Exness Personal Area).\n\n"
+            "_Type your MT5 Account Number and press Send:_"
+        )
     else:
         caption = (
             f"✅ Broker selected: *{broker.capitalize()}*\n\n"
@@ -318,18 +341,390 @@ async def choose_broker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     return ENTER_ACCOUNT
 
 
+async def _grant_access(update: Update, context: ContextTypes.DEFAULT_TYPE, db, broker: str, account_id: str, account: BrokerAccount, batch_button: InlineKeyboardButton) -> None:
+    """Steps shared by every broker once the account is confirmed: claim checks, invite link, member record."""
+    user        = update.effective_user
+    telegram_id = str(user.id)
+
+    # ── 2. Check if account already claimed by SOMEONE ELSE ──────────────
+    if account.is_claimed and account.claimed_by_telegram_id != telegram_id:
+        await update.message.reply_text(
+            "❌ *Account already used*\n\n"
+            f"Account `{account_id}` has already been used to join the Active Traders Community.\n\n"
+            "Each broker account can only be linked to one Telegram account.\n\n"
+            "If you think this is a mistake, contact support.\n\n"
+            "Send /start to try again.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[batch_button]])
+        )
+        return
+
+    # ── 3. Check if THIS Telegram user already joined via this broker ─────
+    existing = db.query(TelegramMember).filter(
+        TelegramMember.telegram_id == telegram_id,
+        TelegramMember.broker      == broker,
+    ).first()
+
+    if existing and existing.is_active:
+        msg_text = (
+            "ℹ️ *You're already a member!*\n\n"
+            f"Your Telegram account is already in the Active Traders Community via *{broker.capitalize()}*.\n\n"
+            "Open Telegram and look for the Active Traders Community in your chat list.\n"
+            "If you were removed and want to rejoin, contact support."
+        )
+        reply_markup = None
+        if not getattr(existing, 'form_link_sent', False):
+            msg_text += "\n\n📝 *Please fill the form below for FREE Smart AI Lite access:*"
+            existing.form_link_sent = True
+            db.commit()
+            reply_markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📝 Smart AI Lite Form", url=SMART_AI_FORM_URL)],
+                [batch_button]
+            ])
+        else:
+            reply_markup = InlineKeyboardMarkup([[batch_button]])
+
+        await update.message.reply_text(
+            msg_text,
+            parse_mode="Markdown",
+            reply_markup=reply_markup,
+        )
+        return
+
+    # ── 3.5 Rejoin after an XM inactivity removal — requires a recent trade ─
+    rejoining = existing is not None
+    if rejoining and broker == "xm":
+        await update.message.reply_text("⏳ Checking your recent XM trading activity, please wait...")
+        from xm import check_recent_xm_trade
+        from config import XM_INACTIVITY_DAYS
+        traded, last_trade_at = await check_recent_xm_trade(account_id)
+
+        if traded is None:
+            await update.message.reply_text(
+                "❌ *We couldn't check your trading activity right now.*\n\n"
+                "Please try again in a few minutes or contact support.\n\n"
+                "Send /start to try again.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[batch_button]])
+            )
+            return
+
+        if not traded:
+            await update.message.reply_text(
+                "❌ *No recent trading activity*\n\n"
+                f"You were removed from the Active Traders Community because account `{account_id}` "
+                f"had no trades in the last {XM_INACTIVITY_DAYS} days.\n\n"
+                "To rejoin, place and close at least one trade on this XM account, wait a few minutes, "
+                "then try again.\n\n"
+                "Send /start to try again.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[batch_button]])
+            )
+            return
+
+        existing.last_trade_date = last_trade_at or (datetime.utcnow() + timedelta(hours=5, minutes=30))
+
+    # ── 3.6 Rejoin after an Exness inactivity removal — requires a recent trade ─
+    if rejoining and broker == "exness":
+        await update.message.reply_text("⏳ Checking your recent Exness trading activity, please wait...")
+        from exness import check_recent_exness_trade
+        from config import EXNESS_INACTIVITY_DAYS
+        traded, last_trade_at = await check_recent_exness_trade(account.client_uid, account_id)
+
+        if traded is None:
+            await update.message.reply_text(
+                "❌ *We couldn't check your trading activity right now.*\n\n"
+                "Please try again in a few minutes or contact support.\n\n"
+                "Send /start to try again.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[batch_button]])
+            )
+            return
+
+        if not traded:
+            await update.message.reply_text(
+                "❌ *No recent trading activity*\n\n"
+                f"You were removed from the Active Traders Community because your Exness account "
+                f"had no trades in the last {EXNESS_INACTIVITY_DAYS} days.\n\n"
+                "To rejoin, place at least one trade on any of your Exness accounts, "
+                "then try again later.\n\n"
+                "Send /start to try again.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[batch_button]])
+            )
+            return
+
+        existing.last_trade_date = last_trade_at
+
+    # ── 3.7 Rejoin after a Vantage inactivity removal — requires a recent trade ─
+    if rejoining and broker == "vantage":
+        await update.message.reply_text("⏳ Checking your recent Vantage trading activity, please wait...")
+        from vantage import check_recent_vantage_trade
+        from config import VANTAGE_INACTIVITY_DAYS
+        traded, last_trade_at = await check_recent_vantage_trade(account_id)
+
+        if traded is None:
+            await update.message.reply_text(
+                "❌ *We couldn't check your trading activity right now.*\n\n"
+                "Please try again in a few minutes or contact support.\n\n"
+                "Send /start to try again.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[batch_button]])
+            )
+            return
+
+        if not traded:
+            await update.message.reply_text(
+                "❌ *No recent trading activity*\n\n"
+                f"You were removed from the Active Traders Community because your Vantage account "
+                f"had no trades in the last {VANTAGE_INACTIVITY_DAYS} days.\n\n"
+                "To rejoin, place at least one trade on any of your Vantage accounts, "
+                "then try again later.\n\n"
+                "Send /start to try again.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[batch_button]])
+            )
+            return
+
+        existing.last_trade_date = last_trade_at
+
+    # ── 4. Generate a one-time invite link ────────────────────────────────
+    await update.message.reply_text("⏳ Verifying your account...")
+
+    try:
+        expire_time = datetime.utcnow() + timedelta(hours=5, minutes=30) + timedelta(hours=24)
+        invite = await context.bot.create_chat_invite_link(
+            chat_id     = _group_id(),
+            name        = f"ATC-{broker}-{account_id[:8]}",
+            member_limit= 1,
+            expire_date = expire_time,
+        )
+    except TelegramError as e:
+        logger.error(f"Failed to create invite link: {e}")
+        await update.message.reply_text(
+            "❌ *Something went wrong on our end.*\n\n"
+            "We couldn't generate your invite link right now.\n"
+            "Please try again in a few minutes or contact support.\n\n"
+            "Send /start to try again.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[batch_button]])
+        )
+        return
+
+    # ── 5. Save pending verification to DB ────────────────────────────────
+    token = str(uuid.uuid4())
+    db.add(PendingVerification(
+        token       = token,
+        telegram_id = telegram_id,
+        broker      = broker,
+        account_id  = account_id,
+        client_uid  = account.client_uid,
+        mt5_id      = account.mt5_id,
+        invite_link = invite.invite_link,
+        expires_at  = expire_time,
+        is_used     = False,
+    ))
+
+    account.is_claimed              = True
+    account.claimed_by_telegram_id  = telegram_id
+    account.claimed_at              = datetime.utcnow() + timedelta(hours=5, minutes=30)
+
+    if rejoining:
+        # Keep the original joined_at so rejoining doesn't grant a fresh new-member grace period.
+        existing.telegram_username = user.username
+        existing.full_name         = user.full_name
+        existing.account_id        = account_id
+        existing.client_uid        = account.client_uid
+        existing.mt5_id            = account.mt5_id
+        existing.is_active         = True
+        existing.inactivity_reminder_stage = 0
+    else:
+        db.add(TelegramMember(
+            telegram_id       = telegram_id,
+            broker            = broker,
+            telegram_username = user.username,
+            full_name         = user.full_name,
+            account_id        = account_id,
+            client_uid        = account.client_uid,
+            mt5_id            = account.mt5_id,
+            joined_at         = datetime.utcnow() + timedelta(hours=5, minutes=30),
+            is_active         = True,
+            form_link_sent    = True,
+        ))
+
+    db.commit()
+
+    # ── 6. Send the invite link ────────────────────────────────────────────
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚀 Join Active Traders Community", url=invite.invite_link)],
+        [InlineKeyboardButton("📝 Smart AI Lite Form", url=SMART_AI_FORM_URL)],
+        [batch_button]
+    ])
+
+    await update.message.reply_text(
+        "✅ *Verified! You're in!*\n\n"
+        f"Account `{account_id}` ({broker.capitalize()}) has been confirmed.\n\n"
+        "👇 Tap the buttons below to join the Active Traders Community and get Smart AI Lite access:\n\n"
+        "⚠️ _The community invite link is valid for 24 hours and can only be used once._\n\n"
+        "📝 *Please fill the form below for FREE Smart AI Lite access:*",
+        parse_mode="Markdown",
+        reply_markup=keyboard,
+    )
+    logger.info(f"Invite sent — telegram_id={telegram_id} broker={broker} account={account_id}")
+
+
+async def _send_not_registered(update: Update, broker: str, batch_button: InlineKeyboardButton) -> None:
+    info = BROKER_AFFILIATE_INFO.get(broker.lower(), {})
+    b_name = info.get("name", broker.capitalize())
+    link = info.get("link", "N/A")
+    code = info.get("code", "N/A")
+
+    reply_markup = None
+    if broker.lower() == "vantage":
+        reply_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✉️ Change Partner (Email Format)", callback_data="vantage_change_partner")],
+            [batch_button]
+        ])
+    else:
+        reply_markup = InlineKeyboardMarkup([[batch_button]])
+
+    await update.message.reply_text(
+        f"❌ *{b_name} Verification Failed*\n\n"
+        "You are not registered under our affiliate link.\n"
+        "Please register using the official link below:\n\n"
+        f"📌 *Partner Link:* {link}\n\n"
+        f"🔹 *Partner Code:* `{code}`\n\n"
+        "After completing the registration or partner code change, please join our bot:\n"
+        "🤖 @WT7\\_VIP\\_Community\\_Bot\n\n"
+        "If you need any assistance, feel free to contact us.",
+        parse_mode="Markdown",
+        reply_markup=reply_markup,
+    )
+
+
+EXNESS_API_ERROR_TEXT = (
+    "❌ *We couldn't reach Exness right now.*\n\n"
+    "Please try again in a few minutes or contact support.\n\n"
+    "Send /start to try again."
+)
+
+
+async def _exness_enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE, account_id: str, batch_button: InlineKeyboardButton) -> int:
+    """Exness step 1: the MT5 account must be under our partner account, then ask for the email."""
+    if not account_id.isdigit():
+        await update.message.reply_text(
+            "❌ Exness MT5 account numbers contain digits only. Please check the number and send it again."
+        )
+        return ENTER_ACCOUNT
+
+    await update.message.reply_text("⏳ Checking Exness systems for your account, please wait...")
+    from exness import find_account
+    ok, row = await find_account(account_id)
+
+    if not ok:
+        await update.message.reply_text(EXNESS_API_ERROR_TEXT, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[batch_button]]))
+        return ConversationHandler.END
+
+    if not row:
+        await _send_not_registered(update, "exness", batch_button)
+        return ConversationHandler.END
+
+    context.user_data["exness_account"] = row
+    await update.message.reply_text(
+        f"✅ Exness account `{account_id}` found.\n\n"
+        "Now please enter the *email address* you used to register your Exness account.\n\n"
+        "_Type your email and press Send:_",
+        parse_mode="Markdown",
+    )
+    return ENTER_EMAIL
+
+
+async def enter_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Exness step 2: the email must belong to the same Exness client, then grant access."""
+    batch_button = InlineKeyboardButton("🎓 Join Class (Basic To Advance Batch)", url="https://www.tradingschoolbywizardtrader.com/live-batch")
+    if not update.message or not update.message.text or not update.effective_user:
+        return ConversationHandler.END
+
+    email = update.message.text.strip().lower()
+    row   = context.user_data.get("exness_account")
+    if not row or context.user_data.get("broker") != "exness":
+        await update.message.reply_text("⚠️ Something went wrong. Please start over by sending /start")
+        return ConversationHandler.END
+
+    if not EMAIL_RE.fullmatch(email):
+        await update.message.reply_text("❌ That doesn't look like an email address. Please send the email registered on your Exness account.")
+        return ENTER_EMAIL
+
+    await update.message.reply_text("⏳ Checking your email with Exness, please wait...")
+    from exness import email_matches_account, save_verified_account
+    matches = await email_matches_account(email, row)
+    account_id = str(row.get("client_account"))
+
+    if matches is None:
+        await update.message.reply_text(EXNESS_API_ERROR_TEXT, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[batch_button]]))
+        return ConversationHandler.END
+
+    if not matches:
+        await update.message.reply_text(
+            "❌ *Email doesn't match*\n\n"
+            f"This email is not the one registered on Exness account `{account_id}`.\n\n"
+            "Please send the email you used to register with Exness, or /cancel to stop.",
+            parse_mode="Markdown",
+        )
+        return ENTER_EMAIL
+
+    telegram_id = str(update.effective_user.id)
+    db = SessionLocal()
+    try:
+        account = save_verified_account(db, row, email)
+
+        # One Exness client (client_uid) can have several MT5 accounts but may only join once.
+        other_claim = None
+        if account.client_uid:
+            other_claim = db.query(BrokerAccount).filter(
+                BrokerAccount.broker     == "exness",
+                BrokerAccount.client_uid == account.client_uid,
+                BrokerAccount.is_claimed == True,
+                BrokerAccount.claimed_by_telegram_id != telegram_id,
+            ).first()
+        if other_claim:
+            await update.message.reply_text(
+                "❌ *Account already used*\n\n"
+                "Your Exness profile has already been used to join the Active Traders Community "
+                "from another Telegram account.\n\n"
+                "Each Exness client can only be linked to one Telegram account.\n\n"
+                "If you think this is a mistake, contact support.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[batch_button]])
+            )
+            return ConversationHandler.END
+
+        await _grant_access(update, context, db, "exness", account_id, account, batch_button)
+
+    except Exception as e:
+        logger.error(f"Error in enter_email: {e}", exc_info=True)
+        await update.message.reply_text(
+            "❌ An unexpected error occurred. Please try again or contact support.\n\n"
+            "Send /start to try again.",
+            reply_markup=InlineKeyboardMarkup([[batch_button]])
+        )
+    finally:
+        db.close()
+        context.user_data.pop("exness_account", None)
+
+    return ConversationHandler.END
+
+
 async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     batch_button = InlineKeyboardButton("🎓 Join Class (Basic To Advance Batch)", url="https://www.tradingschoolbywizardtrader.com/live-batch")
     if not update.message or not update.message.text or not update.effective_user:
         return ConversationHandler.END
     account_id = update.message.text.strip()
 
-    broker      = context.user_data.get("broker", "")
-    user        = update.effective_user
-    telegram_id = str(user.id)
+    broker = context.user_data.get("broker", "")
 
     if account_id.startswith("#"):
-        if broker.lower() == "winpro":
+        if broker.lower() in ("winpro", "exness"):
             await update.message.reply_text("❌ Please enter your MT5 Account ID without the '#' symbol.")
         else:
             await update.message.reply_text("❌ Please enter your Account ID (UID) without the '#' symbol.")
@@ -338,6 +733,9 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     if not broker:
         await update.message.reply_text("⚠️ Something went wrong. Please start over by sending /start")
         return ConversationHandler.END
+
+    if broker == "exness":
+        return await _exness_enter_account(update, context, account_id, batch_button)
 
     if broker == "vantage" and not account_id.isdigit():
         await update.message.reply_text(
@@ -352,8 +750,8 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     try:
         # ── 1. Find the account in DB ─────────────────────────────────────────
         account = db.query(BrokerAccount).filter(
-            BrokerAccount.account_id == account_id,
-            BrokerAccount.broker     == broker,
+            _account_filter(broker, account_id),
+            BrokerAccount.broker == broker,
         ).first()
 
         # ── 1.5 Dynamic check for Vantage ──────────────────────────────────────
@@ -390,8 +788,8 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             is_valid = await verify_vantage_account(account_id, db)
             if is_valid:
                 account = db.query(BrokerAccount).filter(
-                    BrokerAccount.account_id == account_id,
-                    BrokerAccount.broker     == broker,
+                    _account_filter(broker, account_id),
+                    BrokerAccount.broker == broker,
                 ).first()
 
         # ── 1.6 Dynamic check for Winpro ──────────────────────────────────────
@@ -402,8 +800,8 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             
             if is_valid:
                 account = db.query(BrokerAccount).filter(
-                    BrokerAccount.account_id == account_id,
-                    BrokerAccount.broker     == broker,
+                    _account_filter(broker, account_id),
+                    BrokerAccount.broker == broker,
                 ).first()
             else:
                 if reason == "not_under_ib":
@@ -452,148 +850,10 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                 return ConversationHandler.END
 
         if not account:
-            info = BROKER_AFFILIATE_INFO.get(broker.lower(), {})
-            b_name = info.get("name", broker.capitalize())
-            link = info.get("link", "N/A")
-            code = info.get("code", "N/A")
-
-            reply_markup = None
-            if broker.lower() == "vantage":
-                reply_markup = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✉️ Change Partner (Email Format)", callback_data="vantage_change_partner")],
-                    [batch_button]
-                ])
-            else:
-                reply_markup = InlineKeyboardMarkup([[batch_button]])
-
-            await update.message.reply_text(
-                f"❌ *{b_name} Verification Failed*\n\n"
-                "You are not registered under our affiliate link.\n"
-                "Please register using the official link below:\n\n"
-                f"📌 *Partner Link:* {link}\n\n"
-                f"🔹 *Partner Code:* `{code}`\n\n"
-                "After completing the registration or partner code change, please join our bot:\n"
-                "🤖 @WT7\\_VIP\\_Community\\_Bot\n\n"
-                "If you need any assistance, feel free to contact us.",
-                parse_mode="Markdown",
-                reply_markup=reply_markup,
-            )
+            await _send_not_registered(update, broker, batch_button)
             return ConversationHandler.END
 
-        # ── 2. Check if account already claimed by SOMEONE ELSE ──────────────
-        if account.is_claimed and account.claimed_by_telegram_id != telegram_id:
-            await update.message.reply_text(
-                "❌ *Account already used*\n\n"
-                f"Account `{account_id}` has already been used to join the Active Traders Community.\n\n"
-                "Each broker account can only be linked to one Telegram account.\n\n"
-                "If you think this is a mistake, contact support.\n\n"
-                "Send /start to try again.",
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([[batch_button]])
-            )
-            return ConversationHandler.END
-
-        # ── 3. Check if THIS Telegram user already joined via this broker ─────
-        existing = db.query(TelegramMember).filter(
-            TelegramMember.telegram_id == telegram_id,
-            TelegramMember.broker      == broker,
-        ).first()
-
-        if existing:
-            msg_text = (
-                "ℹ️ *You're already a member!*\n\n"
-                f"Your Telegram account is already in the Active Traders Community via *{broker.capitalize()}*.\n\n"
-                "Open Telegram and look for the Active Traders Community in your chat list.\n"
-                "If you were removed and want to rejoin, contact support."
-            )
-            reply_markup = None
-            if not getattr(existing, 'form_link_sent', False):
-                msg_text += "\n\n📝 *Please fill the form below for FREE Smart AI Lite access:*"
-                existing.form_link_sent = True
-                db.commit()
-                reply_markup = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📝 Smart AI Lite Form", url=SMART_AI_FORM_URL)],
-                    [batch_button]
-                ])
-            else:
-                reply_markup = InlineKeyboardMarkup([[batch_button]])
-
-            await update.message.reply_text(
-                msg_text,
-                parse_mode="Markdown",
-                reply_markup=reply_markup,
-            )
-            return ConversationHandler.END
-
-        # ── 4. Generate a one-time invite link ────────────────────────────────
-        await update.message.reply_text("⏳ Verifying your account...")
-
-        try:
-            expire_time = datetime.utcnow() + timedelta(hours=5, minutes=30) + timedelta(hours=24)
-            invite = await context.bot.create_chat_invite_link(
-                chat_id     = _group_id(),
-                name        = f"ATC-{broker}-{account_id[:8]}",
-                member_limit= 1,
-                expire_date = expire_time,
-            )
-        except TelegramError as e:
-            logger.error(f"Failed to create invite link: {e}")
-            await update.message.reply_text(
-                "❌ *Something went wrong on our end.*\n\n"
-                "We couldn't generate your invite link right now.\n"
-                "Please try again in a few minutes or contact support.\n\n"
-                "Send /start to try again.",
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([[batch_button]])
-            )
-            return ConversationHandler.END
-
-        # ── 5. Save pending verification to DB ────────────────────────────────
-        token = str(uuid.uuid4())
-        db.add(PendingVerification(
-            token       = token,
-            telegram_id = telegram_id,
-            broker      = broker,
-            account_id  = account_id,
-            invite_link = invite.invite_link,
-            expires_at  = expire_time,
-            is_used     = False,
-        ))
-
-        account.is_claimed              = True
-        account.claimed_by_telegram_id  = telegram_id
-        account.claimed_at              = datetime.utcnow() + timedelta(hours=5, minutes=30)
-
-        db.add(TelegramMember(
-            telegram_id       = telegram_id,
-            broker            = broker,
-            telegram_username = user.username,
-            full_name         = user.full_name,
-            account_id        = account_id,
-            joined_at         = datetime.utcnow() + timedelta(hours=5, minutes=30),
-            is_active         = True,
-            form_link_sent    = True,
-        ))
-
-        db.commit()
-
-        # ── 6. Send the invite link ────────────────────────────────────────────
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🚀 Join Active Traders Community", url=invite.invite_link)],
-            [InlineKeyboardButton("📝 Smart AI Lite Form", url=SMART_AI_FORM_URL)],
-            [batch_button]
-        ])
-
-        await update.message.reply_text(
-            "✅ *Verified! You're in!*\n\n"
-            f"Account `{account_id}` ({broker.capitalize()}) has been confirmed.\n\n"
-            "👇 Tap the buttons below to join the Active Traders Community and get Smart AI Lite access:\n\n"
-            "⚠️ _The community invite link is valid for 24 hours and can only be used once._\n\n"
-            "📝 *Please fill the form below for FREE Smart AI Lite access:*",
-            parse_mode="Markdown",
-            reply_markup=keyboard,
-        )
-        logger.info(f"Invite sent — telegram_id={telegram_id} broker={broker} account={account_id}")
+        await _grant_access(update, context, db, broker, account_id, account, batch_button)
 
     except Exception as e:
         logger.error(f"Error in enter_account: {e}", exc_info=True)
@@ -686,6 +946,9 @@ def build_app() -> Application:
             ],
             ENTER_ACCOUNT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, enter_account)
+            ],
+            ENTER_EMAIL: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, enter_email)
             ],
         },
         fallbacks=[
