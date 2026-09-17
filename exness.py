@@ -4,11 +4,11 @@ exness.py
 Exness Affiliates API, account verification and the daily inactivity check.
 
 Verification (called from bot.py):
-  1. find_account(mt5_id)            → the MT5 account must be under our partner account
-  2. email_matches_account(email)    → the email must belong to the same Exness client
-  3. save_verified_account(...)      → stored with client_uid, mt5_id and email
+  1. find_account(mt5_id)      → the MT5 account must be under our partner account
+  2. save_verified_account(...) → stored with its client_uid and mt5_id
 
-Every day at 01:00 IST (see kick_scheduler.py), for each active Exness member:
+Every day at 01:00 IST (see kick_scheduler.py) every account under the partner account is
+stored and pushed to Google Sheets, then for each active Exness member:
   • activity = the latest trade on ANY trading account of that Exness client
     (the Exness report is updated daily, so trades show up the next day)
   • at EXNESS_REMINDER_DAYS (20 / 25 / 30) they get a reminder DM
@@ -39,7 +39,8 @@ from xm import _plural, _describe, _remove_member, _send_report
 logger = logging.getLogger(__name__)
 
 EXNESS_BASE_URL = "https://my.exnessaffiliates.com"
-JOB_NAME        = "exness_inactivity_kick"   # daily run is scheduled by kick_scheduler.py
+JOB_NAME        = "exness_inactivity_kick"   # daily runs are scheduled by kick_scheduler.py
+SYNC_JOB_NAME   = "exness_account_sync"
 
 PAGE_SIZE    = 100   # rows per report page
 FILTER_BATCH = 50    # IDs per comma-separated filter, keeps the URL short
@@ -123,20 +124,22 @@ async def fetch_accounts(client_accounts: list[str] | None = None, client_uids: 
     Filter by trading account numbers or by client UIDs. Returns None if any call failed.
     """
     if client_accounts:
-        field, values = "client_account", client_accounts
+        batches = [(("client_account", ",".join(client_accounts[i:i + FILTER_BATCH])),)
+                   for i in range(0, len(client_accounts), FILTER_BATCH)]
     elif client_uids:
-        field, values = "client_uid", client_uids
+        batches = [(("client_uid", ",".join(client_uids[i:i + FILTER_BATCH])),)
+                   for i in range(0, len(client_uids), FILTER_BATCH)]
     else:
-        return []
+        batches = [()]   # no filter — every account under the partner account
 
     rows = []
-    for i in range(0, len(values), FILTER_BATCH):
-        batch = ",".join(values[i:i + FILTER_BATCH])
+    for batch in batches:
         offset = 0
         while True:
-            data = await _request("GET", "/api/reports/clients/accounts/", params={
-                field: batch, "limit": PAGE_SIZE, "offset": offset,
-            })
+            # A fixed sort order keeps paging stable; without it rows shift between pages and some are missed.
+            params = {"limit": PAGE_SIZE, "offset": offset, "ordering": "client_account"}
+            params.update(batch)
+            data = await _request("GET", "/api/reports/clients/accounts/", params=params)
             if data is None:
                 return None
             page = data.get("data") or []
@@ -161,25 +164,8 @@ async def find_account(mt5_id: str) -> tuple[bool, dict | None]:
     return True, None
 
 
-async def email_matches_account(email: str, account_row: dict) -> bool | None:
-    """True if the email belongs to the client who owns account_row; None if the API call failed."""
-    data = await _request("POST", "/api/partner/affiliation/", json={"email": email})
-    if data is None:
-        return None
-    if not data.get("affiliation"):
-        return False
-
-    mt5_id = str(account_row.get("client_account"))
-    if mt5_id in {str(a) for a in data.get("accounts") or []}:
-        return True
-    # The accounts report gives the 8-character short form of the client UUID.
-    full_uid  = str(data.get("client_uid") or "").lower()
-    short_uid = str(account_row.get("client_uid") or "").lower()
-    return bool(full_uid and short_uid and full_uid.startswith(short_uid))
-
-
-def save_verified_account(db: Session, row: dict, email: str) -> BrokerAccount:
-    """Stores (or updates) the verified Exness account with its client UID, MT5 ID and email."""
+def save_verified_account(db: Session, row: dict) -> BrokerAccount:
+    """Stores (or updates) a verified Exness account with its client UID and MT5 ID."""
     mt5_id     = str(row.get("client_account"))
     client_uid = str(row.get("client_uid") or "") or None
 
@@ -188,19 +174,18 @@ def save_verified_account(db: Session, row: dict, email: str) -> BrokerAccount:
         BrokerAccount.broker == "exness",
     ).first()
     if account:
-        account.client_email = email
         account.client_uid   = client_uid
         account.mt5_id       = mt5_id
         db.commit()
         return account
 
-    db.add(BrokerAccount(account_id=mt5_id, broker="exness", client_email=email, client_uid=client_uid, mt5_id=mt5_id))
+    db.add(BrokerAccount(account_id=mt5_id, broker="exness", client_uid=client_uid, mt5_id=mt5_id))
     try:
         db.commit()
     except IntegrityError:
         db.rollback()  # stored concurrently — fall through to the existing row
     else:
-        trigger_sheet_sync("exness", mt5_id, email, extra_data={
+        trigger_sheet_sync("exness", mt5_id, "", client_uid=client_uid or "", mt5_id=mt5_id, extra_data={
             "client_uid":   client_uid or "",
             "mt5_id":       mt5_id,
             "account_type": row.get("client_account_type") or "",
@@ -212,6 +197,36 @@ def save_verified_account(db: Session, row: dict, email: str) -> BrokerAccount:
         BrokerAccount.mt5_id == mt5_id,
         BrokerAccount.broker == "exness",
     ).first()
+
+
+async def sync_all_exness_accounts(bot: Bot | None = None) -> str:
+    """
+    Daily job: stores every trading account under the partner account that isn't in the
+    database yet, and pushes each new one to Google Sheets. No user action needed.
+    """
+    rows = await fetch_accounts()
+    if rows is None:
+        logger.error("[exness-sync] Exness API call failed — nothing synced")
+        return "Exness account sync: API call failed, nothing synced."
+
+    db = SessionLocal()
+    added = 0
+    try:
+        for row in rows:
+            mt5_id = str(row.get("client_account") or "")
+            if not mt5_id:
+                continue
+            existed = db.query(BrokerAccount).filter(
+                BrokerAccount.mt5_id == mt5_id,
+                BrokerAccount.broker == "exness",
+            ).first() is not None
+            save_verified_account(db, row)       # also pushes new rows to the sheet
+            added += not existed
+    finally:
+        db.close()
+
+    logger.info(f"[exness-sync] {len(rows)} accounts checked, {added} new")
+    return f"Exness account sync: {len(rows)} accounts checked, {added} new."
 
 
 def _parse_date(value) -> datetime | None:

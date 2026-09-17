@@ -4,7 +4,6 @@ bot.py
 Telegram bot that guides users through verification and sends a one-time invite link.
 """
 
-import re
 import uuid
 import logging
 from datetime import datetime, timedelta
@@ -34,9 +33,6 @@ REQUEST_ACCOUNT_SIZE  = 1
 REQUEST_PHONE         = 2
 CHOOSE_BROKER         = 3
 ENTER_ACCOUNT         = 4
-ENTER_EMAIL           = 5
-
-EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 
 # Cache for photo file_ids to speed up sending
 BROKER_PHOTO_FILE_IDS = {}
@@ -610,7 +606,7 @@ EXNESS_API_ERROR_TEXT = (
 
 
 async def _exness_enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE, account_id: str, batch_button: InlineKeyboardButton) -> int:
-    """Exness step 1: the MT5 account must be under our partner account, then ask for the email."""
+    """Exness: the MT5 account must be under our partner account, then grant access."""
     if not account_id.isdigit():
         await update.message.reply_text(
             "❌ Exness MT5 account numbers contain digits only. Please check the number and send it again."
@@ -618,7 +614,7 @@ async def _exness_enter_account(update: Update, context: ContextTypes.DEFAULT_TY
         return ENTER_ACCOUNT
 
     await update.message.reply_text("⏳ Checking Exness systems for your account, please wait...")
-    from exness import find_account
+    from exness import find_account, save_verified_account
     ok, row = await find_account(account_id)
 
     if not ok:
@@ -629,65 +625,18 @@ async def _exness_enter_account(update: Update, context: ContextTypes.DEFAULT_TY
         await _send_not_registered(update, "exness", batch_button)
         return ConversationHandler.END
 
-    context.user_data["exness_account"] = row
-    await update.message.reply_text(
-        f"✅ Exness account `{account_id}` found.\n\n"
-        "Now please enter the *email address* you used to register your Exness account.\n\n"
-        "_Type your email and press Send:_",
-        parse_mode="Markdown",
-    )
-    return ENTER_EMAIL
-
-
-async def enter_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Exness step 2: the email must belong to the same Exness client, then grant access."""
-    batch_button = InlineKeyboardButton("🎓 Join Class (Basic To Advance Batch)", url="https://www.tradingschoolbywizardtrader.com/live-batch")
-    if not update.message or not update.message.text or not update.effective_user:
-        return ConversationHandler.END
-
-    email = update.message.text.strip().lower()
-    row   = context.user_data.get("exness_account")
-    if not row or context.user_data.get("broker") != "exness":
-        await update.message.reply_text("⚠️ Something went wrong. Please start over by sending /start")
-        return ConversationHandler.END
-
-    if not EMAIL_RE.fullmatch(email):
-        await update.message.reply_text("❌ That doesn't look like an email address. Please send the email registered on your Exness account.")
-        return ENTER_EMAIL
-
-    await update.message.reply_text("⏳ Checking your email with Exness, please wait...")
-    from exness import email_matches_account, save_verified_account
-    matches = await email_matches_account(email, row)
-    account_id = str(row.get("client_account"))
-
-    if matches is None:
-        await update.message.reply_text(EXNESS_API_ERROR_TEXT, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[batch_button]]))
-        return ConversationHandler.END
-
-    if not matches:
-        await update.message.reply_text(
-            "❌ *Email doesn't match*\n\n"
-            f"This email is not the one registered on Exness account `{account_id}`.\n\n"
-            "Please send the email you used to register with Exness, or /cancel to stop.",
-            parse_mode="Markdown",
-        )
-        return ENTER_EMAIL
-
     telegram_id = str(update.effective_user.id)
     db = SessionLocal()
     try:
-        account = save_verified_account(db, row, email)
+        account = save_verified_account(db, row)
 
         # One Exness client (client_uid) can have several MT5 accounts but may only join once.
-        other_claim = None
-        if account.client_uid:
-            other_claim = db.query(BrokerAccount).filter(
-                BrokerAccount.broker     == "exness",
-                BrokerAccount.client_uid == account.client_uid,
-                BrokerAccount.is_claimed == True,
-                BrokerAccount.claimed_by_telegram_id != telegram_id,
-            ).first()
-        if other_claim:
+        if account.client_uid and db.query(BrokerAccount).filter(
+            BrokerAccount.broker     == "exness",
+            BrokerAccount.client_uid == account.client_uid,
+            BrokerAccount.is_claimed == True,
+            BrokerAccount.claimed_by_telegram_id != telegram_id,
+        ).first():
             await update.message.reply_text(
                 "❌ *Account already used*\n\n"
                 "Your Exness profile has already been used to join the Active Traders Community "
@@ -702,7 +651,7 @@ async def enter_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         await _grant_access(update, context, db, "exness", account_id, account, batch_button)
 
     except Exception as e:
-        logger.error(f"Error in enter_email: {e}", exc_info=True)
+        logger.error(f"Error in _exness_enter_account: {e}", exc_info=True)
         await update.message.reply_text(
             "❌ An unexpected error occurred. Please try again or contact support.\n\n"
             "Send /start to try again.",
@@ -710,7 +659,6 @@ async def enter_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         )
     finally:
         db.close()
-        context.user_data.pop("exness_account", None)
 
     return ConversationHandler.END
 
@@ -946,9 +894,6 @@ def build_app() -> Application:
             ],
             ENTER_ACCOUNT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, enter_account)
-            ],
-            ENTER_EMAIL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, enter_email)
             ],
         },
         fallbacks=[

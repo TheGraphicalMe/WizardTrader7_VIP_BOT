@@ -87,6 +87,7 @@ async def lifespan(app: FastAPI):
         kick_jobs.append((vantage.JOB_NAME, vantage.run_vantage_inactivity_check))
     if "exness" in SUPPORTED_BROKERS:
         import exness
+        kick_jobs.append((exness.SYNC_JOB_NAME, exness.sync_all_exness_accounts))
         kick_jobs.append((exness.JOB_NAME, exness.run_exness_inactivity_check))
     kick_task = asyncio.create_task(inactivity_scheduler(_bot_app.bot, kick_jobs))
 
@@ -440,6 +441,13 @@ async def trigger_vantage_inactivity_check(dry_run: bool = True, admin: str = De
     return {"dry_run": dry_run, "report": report}
 
 
+@app.post("/admin/exness-sync")
+async def trigger_exness_sync(admin: str = Depends(verify_admin)):
+    """Fetch every Exness account now and push new ones to Google Sheets."""
+    from exness import sync_all_exness_accounts
+    return {"result": await sync_all_exness_accounts()}
+
+
 @app.post("/admin/exness-inactivity-check")
 async def trigger_exness_inactivity_check(dry_run: bool = True, admin: str = Depends(verify_admin)):
     """Run the Exness inactivity check now. Dry run by default; pass ?dry_run=false to actually remove members."""
@@ -480,6 +488,7 @@ async def root():
             "manual_add":       "POST /admin/add-account?broker=delta&account_id=Z",
             "xm_inactivity":    "POST /admin/xm-inactivity-check?dry_run=true",
             "vantage_inactivity": "POST /admin/vantage-inactivity-check?dry_run=true",
+            "exness_sync":       "POST /admin/exness-sync",
             "exness_inactivity": "POST /admin/exness-inactivity-check?dry_run=true",
         },
     }
