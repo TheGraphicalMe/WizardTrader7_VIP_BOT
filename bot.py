@@ -22,7 +22,7 @@ from telegram.ext import (
 )
 from telegram.error import TelegramError
 
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_GROUP_ID, SUPPORTED_BROKERS, ALLOWED_USERS, BROKER_AFFILIATE_INFO, SMART_AI_FORM_URL
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_GROUP_ID, SUPPORTED_BROKERS, ALLOWED_USERS, BROKER_AFFILIATE_INFO, SMART_AI_FORM_URL, SMART_AI_WEBSITE_URL
 from database import SessionLocal, BrokerAccount, TelegramMember, PendingVerification, TelegramUser
 
 logger = logging.getLogger(__name__)
@@ -337,7 +337,7 @@ async def choose_broker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     return ENTER_ACCOUNT
 
 
-async def _grant_access(update: Update, context: ContextTypes.DEFAULT_TYPE, db, broker: str, account_id: str, account: BrokerAccount, batch_button: InlineKeyboardButton) -> None:
+async def _grant_access(update: Update, context: ContextTypes.DEFAULT_TYPE, db, broker: str, account_id: str, account: BrokerAccount, batch_button: InlineKeyboardButton, smart_ai_website_button: InlineKeyboardButton) -> None:
     """Steps shared by every broker once the account is confirmed: claim checks, invite link, member record."""
     user        = update.effective_user
     telegram_id = str(user.id)
@@ -351,7 +351,7 @@ async def _grant_access(update: Update, context: ContextTypes.DEFAULT_TYPE, db, 
             "If you think this is a mistake, contact support.\n\n"
             "Send /start to try again.",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[batch_button]])
+            reply_markup=InlineKeyboardMarkup([[batch_button], [smart_ai_website_button]])
         )
         return
 
@@ -375,10 +375,11 @@ async def _grant_access(update: Update, context: ContextTypes.DEFAULT_TYPE, db, 
             db.commit()
             reply_markup = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📝 Smart AI Lite Form", url=SMART_AI_FORM_URL)],
-                [batch_button]
+                [batch_button],
+                [smart_ai_website_button]
             ])
         else:
-            reply_markup = InlineKeyboardMarkup([[batch_button]])
+            reply_markup = InlineKeyboardMarkup([[batch_button], [smart_ai_website_button]])
 
         await update.message.reply_text(
             msg_text,
@@ -401,7 +402,7 @@ async def _grant_access(update: Update, context: ContextTypes.DEFAULT_TYPE, db, 
                 "Please try again in a few minutes or contact support.\n\n"
                 "Send /start to try again.",
                 parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([[batch_button]])
+                reply_markup=InlineKeyboardMarkup([[batch_button], [smart_ai_website_button]])
             )
             return
 
@@ -433,7 +434,7 @@ async def _grant_access(update: Update, context: ContextTypes.DEFAULT_TYPE, db, 
                 "Please try again in a few minutes or contact support.\n\n"
                 "Send /start to try again.",
                 parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([[batch_button]])
+                reply_markup=InlineKeyboardMarkup([[batch_button], [smart_ai_website_button]])
             )
             return
 
@@ -446,7 +447,7 @@ async def _grant_access(update: Update, context: ContextTypes.DEFAULT_TYPE, db, 
                 "then try again later.\n\n"
                 "Send /start to try again.",
                 parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([[batch_button]])
+                reply_markup=InlineKeyboardMarkup([[batch_button], [smart_ai_website_button]])
             )
             return
 
@@ -465,7 +466,7 @@ async def _grant_access(update: Update, context: ContextTypes.DEFAULT_TYPE, db, 
                 "Please try again in a few minutes or contact support.\n\n"
                 "Send /start to try again.",
                 parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([[batch_button]])
+                reply_markup=InlineKeyboardMarkup([[batch_button], [smart_ai_website_button]])
             )
             return
 
@@ -478,7 +479,7 @@ async def _grant_access(update: Update, context: ContextTypes.DEFAULT_TYPE, db, 
                 "then try again later.\n\n"
                 "Send /start to try again.",
                 parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([[batch_button]])
+                reply_markup=InlineKeyboardMarkup([[batch_button], [smart_ai_website_button]])
             )
             return
 
@@ -503,7 +504,7 @@ async def _grant_access(update: Update, context: ContextTypes.DEFAULT_TYPE, db, 
             "Please try again in a few minutes or contact support.\n\n"
             "Send /start to try again.",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[batch_button]])
+            reply_markup=InlineKeyboardMarkup([[batch_button], [smart_ai_website_button]])
         )
         return
 
@@ -554,7 +555,8 @@ async def _grant_access(update: Update, context: ContextTypes.DEFAULT_TYPE, db, 
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🚀 Join Active Traders Community", url=invite.invite_link)],
         [InlineKeyboardButton("📝 Smart AI Lite Form", url=SMART_AI_FORM_URL)],
-        [batch_button]
+        [batch_button],
+        [smart_ai_website_button]
     ])
 
     await update.message.reply_text(
@@ -569,7 +571,7 @@ async def _grant_access(update: Update, context: ContextTypes.DEFAULT_TYPE, db, 
     logger.info(f"Invite sent — telegram_id={telegram_id} broker={broker} account={account_id}")
 
 
-async def _send_not_registered(update: Update, broker: str, batch_button: InlineKeyboardButton) -> None:
+async def _send_not_registered(update: Update, broker: str, batch_button: InlineKeyboardButton, smart_ai_website_button: InlineKeyboardButton) -> None:
     info = BROKER_AFFILIATE_INFO.get(broker.lower(), {})
     b_name = info.get("name", broker.capitalize())
     link = info.get("link", "N/A")
@@ -579,10 +581,11 @@ async def _send_not_registered(update: Update, broker: str, batch_button: Inline
     if broker.lower() == "vantage":
         reply_markup = InlineKeyboardMarkup([
             [InlineKeyboardButton("✉️ Change Partner (Email Format)", callback_data="vantage_change_partner")],
-            [batch_button]
+            [batch_button],
+            [smart_ai_website_button]
         ])
     else:
-        reply_markup = InlineKeyboardMarkup([[batch_button]])
+        reply_markup = InlineKeyboardMarkup([[batch_button], [smart_ai_website_button]])
 
     await update.message.reply_text(
         f"❌ *{b_name} Verification Failed*\n\n"
@@ -605,7 +608,7 @@ EXNESS_API_ERROR_TEXT = (
 )
 
 
-async def _exness_enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE, account_id: str, batch_button: InlineKeyboardButton) -> int:
+async def _exness_enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE, account_id: str, batch_button: InlineKeyboardButton, smart_ai_website_button: InlineKeyboardButton) -> int:
     """Exness: the MT5 account must be under our partner account, then grant access."""
     if not account_id.isdigit():
         await update.message.reply_text(
@@ -618,11 +621,11 @@ async def _exness_enter_account(update: Update, context: ContextTypes.DEFAULT_TY
     ok, row = await find_account(account_id)
 
     if not ok:
-        await update.message.reply_text(EXNESS_API_ERROR_TEXT, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[batch_button]]))
+        await update.message.reply_text(EXNESS_API_ERROR_TEXT, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[batch_button], [smart_ai_website_button]]))
         return ConversationHandler.END
 
     if not row:
-        await _send_not_registered(update, "exness", batch_button)
+        await _send_not_registered(update, "exness", batch_button, smart_ai_website_button)
         return ConversationHandler.END
 
     telegram_id = str(update.effective_user.id)
@@ -644,18 +647,18 @@ async def _exness_enter_account(update: Update, context: ContextTypes.DEFAULT_TY
                 "Each Exness client can only be linked to one Telegram account.\n\n"
                 "If you think this is a mistake, contact support.",
                 parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([[batch_button]])
+                reply_markup=InlineKeyboardMarkup([[batch_button], [smart_ai_website_button]])
             )
             return ConversationHandler.END
 
-        await _grant_access(update, context, db, "exness", account_id, account, batch_button)
+        await _grant_access(update, context, db, "exness", account_id, account, batch_button, smart_ai_website_button)
 
     except Exception as e:
         logger.error(f"Error in _exness_enter_account: {e}", exc_info=True)
         await update.message.reply_text(
             "❌ An unexpected error occurred. Please try again or contact support.\n\n"
             "Send /start to try again.",
-            reply_markup=InlineKeyboardMarkup([[batch_button]])
+            reply_markup=InlineKeyboardMarkup([[batch_button], [smart_ai_website_button]])
         )
     finally:
         db.close()
@@ -664,7 +667,8 @@ async def _exness_enter_account(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    batch_button = InlineKeyboardButton("🎓 Join Class (Basic To Advance Batch)", url="https://www.tradingschoolbywizardtrader.com/live-batch")
+    batch_button = InlineKeyboardButton("🎓 Join Class (Basic To Advance Batch)", url="https://wizardconsulting.ae/live-sessions")
+    smart_ai_website_button = InlineKeyboardButton("🌐 Smart AI Trading", url=SMART_AI_WEBSITE_URL)
     if not update.message or not update.message.text or not update.effective_user:
         return ConversationHandler.END
     account_id = update.message.text.strip()
@@ -683,14 +687,14 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         return ConversationHandler.END
 
     if broker == "exness":
-        return await _exness_enter_account(update, context, account_id, batch_button)
+        return await _exness_enter_account(update, context, account_id, batch_button, smart_ai_website_button)
 
     if broker == "vantage" and not account_id.isdigit():
         await update.message.reply_text(
             "❌ *Account not found or Timeout Active*\n\n"
             "Your account UID is wrong, or you must try after 3 hours if you have recently registered.",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[batch_button]])
+            reply_markup=InlineKeyboardMarkup([[batch_button], [smart_ai_website_button]])
         )
         return ConversationHandler.END
 
@@ -711,7 +715,7 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                     "❌ *Account not found or Timeout Active*\n\n"
                     "Your account UID is wrong, or you must try after 3 hours if you have recently registered.",
                     parse_mode="Markdown",
-                    reply_markup=InlineKeyboardMarkup([[batch_button]])
+                    reply_markup=InlineKeyboardMarkup([[batch_button], [smart_ai_website_button]])
                 )
                 return ConversationHandler.END
                 
@@ -724,7 +728,7 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                     "❌ *Account not found or Timeout Active*\n\n"
                     "Your account UID is wrong, or you must try after 3 hours if you have recently registered.",
                     parse_mode="Markdown",
-                    reply_markup=InlineKeyboardMarkup([[batch_button]])
+                    reply_markup=InlineKeyboardMarkup([[batch_button], [smart_ai_website_button]])
                 )
                 return ConversationHandler.END
                 
@@ -766,7 +770,7 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                         "🤖 @WT7\\_VIP\\_Community\\_Bot\n\n"
                         "If you need any assistance, feel free to contact us.",
                         parse_mode="Markdown",
-                        reply_markup=InlineKeyboardMarkup([[batch_button]])
+                        reply_markup=InlineKeyboardMarkup([[batch_button], [smart_ai_website_button]])
                     )
                 elif reason.startswith("insufficient_deposit"):
                     current_deposit = reason.split(":")[1]
@@ -777,7 +781,7 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                         "Once you have deposited the required amount, wait a few minutes for it to be approved, then try again.\n\n"
                         "Send /start to try again.",
                         parse_mode="Markdown",
-                        reply_markup=InlineKeyboardMarkup([[batch_button]])
+                        reply_markup=InlineKeyboardMarkup([[batch_button], [smart_ai_website_button]])
                     )
                 elif reason == "invalid_format":
                     await update.message.reply_text(
@@ -785,7 +789,7 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                         "Winpro MT5 Account IDs should only contain numbers.\n\n"
                         "Send /start to try again.",
                         parse_mode="Markdown",
-                        reply_markup=InlineKeyboardMarkup([[batch_button]])
+                        reply_markup=InlineKeyboardMarkup([[batch_button], [smart_ai_website_button]])
                     )
                 else:
                     await update.message.reply_text(
@@ -793,22 +797,22 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                         "An error occurred while checking your Winpro account. Please try again later or contact support.\n\n"
                         "Send /start to try again.",
                         parse_mode="Markdown",
-                        reply_markup=InlineKeyboardMarkup([[batch_button]])
+                        reply_markup=InlineKeyboardMarkup([[batch_button], [smart_ai_website_button]])
                     )
                 return ConversationHandler.END
 
         if not account:
-            await _send_not_registered(update, broker, batch_button)
+            await _send_not_registered(update, broker, batch_button, smart_ai_website_button)
             return ConversationHandler.END
 
-        await _grant_access(update, context, db, broker, account_id, account, batch_button)
+        await _grant_access(update, context, db, broker, account_id, account, batch_button, smart_ai_website_button)
 
     except Exception as e:
         logger.error(f"Error in enter_account: {e}", exc_info=True)
         await update.message.reply_text(
             "❌ An unexpected error occurred. Please try again or contact support.\n\n"
             "Send /start to try again.",
-            reply_markup=InlineKeyboardMarkup([[batch_button]])
+            reply_markup=InlineKeyboardMarkup([[batch_button], [smart_ai_website_button]])
         )
     finally:
         db.close()
