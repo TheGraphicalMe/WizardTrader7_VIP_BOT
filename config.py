@@ -25,10 +25,10 @@ VANTAGE_SECRET  = os.getenv("VANTAGE_SECRET", "")
 
 # ── Vantage Inactivity Kick ─────────────────────────────────────────────────
 # Same rules as XM; runs daily at 01:00 IST. Activity = a trade on any account of the Vantage client.
-VANTAGE_INACTIVITY_DAYS = int(os.getenv("VANTAGE_INACTIVITY_DAYS", "30"))
+VANTAGE_INACTIVITY_DAYS = int(os.getenv("VANTAGE_INACTIVITY_DAYS", "15"))
 VANTAGE_KICK_START_DATE = date.fromisoformat(os.getenv("VANTAGE_KICK_START_DATE", "2026-09-18").strip())
 VANTAGE_REMINDER_DAYS = sorted(
-    d for d in (int(x) for x in os.getenv("VANTAGE_REMINDER_DAYS", "20,25,30").split(",") if x.strip())
+    d for d in (int(x) for x in os.getenv("VANTAGE_REMINDER_DAYS", "7,12,15").split(",") if x.strip())
     if 0 < d <= VANTAGE_INACTIVITY_DAYS
 )
 # When true, the daily job only reports — no reminders sent, nobody removed.
@@ -43,12 +43,12 @@ XM_API_KEY = os.getenv("XM_API_KEY", "").strip()
 
 # ── XM Inactivity Kick ──────────────────────────────────────────────────────
 # Members with no XM trades for XM_INACTIVITY_DAYS are removed daily at 01:00 IST.
-XM_INACTIVITY_DAYS = int(os.getenv("XM_INACTIVITY_DAYS", "30"))
+XM_INACTIVITY_DAYS = int(os.getenv("XM_INACTIVITY_DAYS", "15"))
 # Everyone's inactivity clock starts no earlier than this date (fresh start for existing members).
 XM_KICK_START_DATE = date.fromisoformat(os.getenv("XM_KICK_START_DATE", "2026-09-18").strip())
 # Days without trading at which a reminder DM is sent.
 XM_REMINDER_DAYS = sorted(
-    d for d in (int(x) for x in os.getenv("XM_REMINDER_DAYS", "20,25,30").split(",") if x.strip())
+    d for d in (int(x) for x in os.getenv("XM_REMINDER_DAYS", "7,12,15").split(",") if x.strip())
     if 0 < d <= XM_INACTIVITY_DAYS
 )
 # When true, the daily job only reports — no reminders sent, nobody removed.
@@ -59,6 +59,12 @@ XM_KICK_MAX_RATIO = float(os.getenv("XM_KICK_MAX_RATIO", "0.9"))
 INACTIVITY_REPORT_TELEGRAM_IDS = [
     x.strip() for x in os.getenv("INACTIVITY_REPORT_TELEGRAM_IDS", "").split(",") if x.strip()
 ]
+# Comma-separated Telegram user IDs and/or @usernames that are never reminded and never
+# removed (admins, staff). Applies to every broker's inactivity check.
+# Example: KICK_EXEMPT_TELEGRAM_IDS=123456789,@harshit,another_user
+_exempt = [x.strip() for x in os.getenv("KICK_EXEMPT_TELEGRAM_IDS", "").split(",") if x.strip()]
+KICK_EXEMPT_TELEGRAM_IDS = {x for x in _exempt if x.isdigit()}
+KICK_EXEMPT_USERNAMES    = {x.lstrip("@").lower() for x in _exempt if not x.isdigit()}
 
 # ── Exness Affiliates API ────────────────────────────────────────────────────
 # Partner-area login, used to verify MT5 accounts + emails and for the inactivity kick.
@@ -67,10 +73,10 @@ EXNESS_PASSWORD = os.getenv("EXNESS_PASSWORD", "").strip()
 
 # ── Exness Inactivity Kick ──────────────────────────────────────────────────
 # Same rules as XM; runs daily at 01:00 IST. Activity = a trade on any account of the Exness client.
-EXNESS_INACTIVITY_DAYS = int(os.getenv("EXNESS_INACTIVITY_DAYS", "30"))
+EXNESS_INACTIVITY_DAYS = int(os.getenv("EXNESS_INACTIVITY_DAYS", "15"))
 EXNESS_KICK_START_DATE = date.fromisoformat(os.getenv("EXNESS_KICK_START_DATE", "2026-09-18").strip())
 EXNESS_REMINDER_DAYS = sorted(
-    d for d in (int(x) for x in os.getenv("EXNESS_REMINDER_DAYS", "20,25,30").split(",") if x.strip())
+    d for d in (int(x) for x in os.getenv("EXNESS_REMINDER_DAYS", "7,12,15").split(",") if x.strip())
     if 0 < d <= EXNESS_INACTIVITY_DAYS
 )
 # When true, the daily job only reports — no reminders sent, nobody removed.

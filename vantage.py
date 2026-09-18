@@ -16,7 +16,7 @@ from config import (
 )
 from database import BrokerAccount, SessionLocal, TelegramMember, get_ist_time
 from google_sheets import trigger_sheet_sync
-from xm import _plural, _describe, _remove_member, _send_report
+from xm import _plural, _describe, _remove_member, _send_report, is_kick_exempt
 
 logger = logging.getLogger(__name__)
 
@@ -160,8 +160,8 @@ async def fetch_allocation_data(start_time: str, end_time: str) -> list:
 #
 # Every day at 01:00 IST (see kick_scheduler.py), for each active Vantage member:
 #   • activity = the latest trade on ANY Vantage account of the member's userId
-#   • at VANTAGE_REMINDER_DAYS (20 / 25 / 30) they get a reminder DM
-#   • after VANTAGE_INACTIVITY_DAYS (30), i.e. on day 31, they are removed (ban + immediate unban)
+#   • at VANTAGE_REMINDER_DAYS (7 / 12 / 15) they get a reminder DM
+#   • after VANTAGE_INACTIVITY_DAYS (15), i.e. on day 16, they are removed (ban + immediate unban)
 #
 # One commissionData call returns every account under the IB that traded in the window,
 # with its lastTradeTime. Vantage allows roughly one call every 5–6 minutes (it answers
@@ -170,7 +170,7 @@ async def fetch_allocation_data(start_time: str, end_time: str) -> list:
 
 JOB_NAME = "vantage_inactivity_kick"   # daily run is scheduled by kick_scheduler.py
 
-COMMISSION_WINDOW_DAYS   = 31
+COMMISSION_WINDOW_DAYS   = VANTAGE_INACTIVITY_DAYS + 1   # one day past the limit, so day-15 trades still count
 COMMISSION_CACHE_SECONDS = 600   # rejoin checks shortly after another call reuse the result
 RATE_LIMIT_RETRY_SECONDS = 400   # wait out Vantage's per-call rate limit before retrying
 
@@ -358,11 +358,15 @@ async def run_vantage_inactivity_check(bot: Bot, dry_run: bool = VANTAGE_KICK_DR
         ).all()
 
         first_reminder = VANTAGE_REMINDER_DAYS[0] if VANTAGE_REMINDER_DAYS else VANTAGE_INACTIVITY_DAYS
-        active, waiting, reminders_due, inactive = [], [], [], []
+        active, exempt, waiting, reminders_due, inactive = [], [], [], [], []
         for member in members:
             ts = last_trade.get(str(member.client_uid or member.account_id).strip())
             if ts and (member.last_trade_date is None or ts > member.last_trade_date):
                 member.last_trade_date = ts
+
+            if is_kick_exempt(member):
+                exempt.append(member)
+                continue
 
             days = _inactive_days(member, today)
             if days < first_reminder:
@@ -394,6 +398,7 @@ async def run_vantage_inactivity_check(bot: Bot, dry_run: bool = VANTAGE_KICK_DR
         lines += [
             f"Active Vantage members checked: <b>{len(members)}</b>",
             f"Active (inactive under {first_reminder} days): {len(active)}",
+            f"Exempt (never reminded or removed): {len(exempt)}",
             f"Reminders {'due' if dry_run else 'sent'}: "
             + " · ".join(f"{d}-day: {stage_counts[d]}" for d in VANTAGE_REMINDER_DAYS)
             + (f" (could not deliver: {undelivered})" if undelivered else ""),

@@ -7,14 +7,14 @@ from config import GOOGLE_SHEETS_WEBHOOK_URL
 logger = logging.getLogger(__name__)
 
 async def append_to_sheet(broker: str, account_id: str, email: str = "", extra_data: dict = None,
-                          client_uid: str = "", mt5_id: str = ""):
+                          client_uid: str = "", mt5_id: str = "") -> bool:
     """
     Sends newly registered account data to the Google Sheets Webhook.
-    This runs asynchronously and doesn't block the main flow.
+    Returns True when the row was accepted, so callers can count failures.
     """
     if not GOOGLE_SHEETS_WEBHOOK_URL:
         # Silently skip if the webhook URL isn't configured yet
-        return
+        return False
 
     # Use current UTC time for consistency
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
@@ -40,8 +40,10 @@ async def append_to_sheet(broker: str, account_id: str, email: str = "", extra_d
             )
             response.raise_for_status()
             logger.info(f"✅ Synced account {account_id} ({broker}) to Google Sheets.")
+            return True
     except Exception as e:
         logger.error(f"❌ Failed to sync account {account_id} to Google Sheets: {e}")
+        return False
 
 def trigger_sheet_sync(broker: str, account_id: str, email: str = "", extra_data: dict = None,
                        client_uid: str = "", mt5_id: str = ""):

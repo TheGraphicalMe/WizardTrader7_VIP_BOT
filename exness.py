@@ -11,8 +11,8 @@ Every day at 01:00 IST (see kick_scheduler.py) every account under the partner a
 stored and pushed to Google Sheets, then for each active Exness member:
   • activity = the latest trade on ANY trading account of that Exness client
     (the Exness report is updated daily, so trades show up the next day)
-  • at EXNESS_REMINDER_DAYS (20 / 25 / 30) they get a reminder DM
-  • after EXNESS_INACTIVITY_DAYS (30), i.e. on day 31, they are removed from the group (ban + immediate unban)
+  • at EXNESS_REMINDER_DAYS (7 / 12 / 15) they get a reminder DM
+  • after EXNESS_INACTIVITY_DAYS (15), i.e. on day 16, they are removed from the group (ban + immediate unban)
 A report is sent to INACTIVITY_REPORT_TELEGRAM_IDS.
 """
 
@@ -29,12 +29,12 @@ from telegram.error import TelegramError
 
 from bot import _group_id
 from config import (
-    EXNESS_LOGIN, EXNESS_PASSWORD, EXNESS_INACTIVITY_DAYS, EXNESS_KICK_START_DATE,
+    GOOGLE_SHEETS_WEBHOOK_URL, EXNESS_LOGIN, EXNESS_PASSWORD, EXNESS_INACTIVITY_DAYS, EXNESS_KICK_START_DATE,
     EXNESS_REMINDER_DAYS, EXNESS_KICK_DRY_RUN, EXNESS_KICK_MAX_RATIO,
 )
 from database import SessionLocal, BrokerAccount, TelegramMember, get_ist_time
-from google_sheets import trigger_sheet_sync
-from xm import _plural, _describe, _remove_member, _send_report
+from google_sheets import append_to_sheet, trigger_sheet_sync
+from xm import _plural, _describe, _remove_member, _send_report, is_kick_exempt
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +164,18 @@ async def find_account(mt5_id: str) -> tuple[bool, dict | None]:
     return True, None
 
 
-def save_verified_account(db: Session, row: dict) -> BrokerAccount:
+def sheet_fields(row: dict) -> dict:
+    """The Google Sheets payload for one Exness account."""
+    return {
+        "client_uid":   str(row.get("client_uid") or ""),
+        "mt5_id":       str(row.get("client_account") or ""),
+        "account_type": row.get("client_account_type") or "",
+        "platform":     row.get("platform") or "",
+        "created":      row.get("client_account_created") or "",
+    }
+
+
+def save_verified_account(db: Session, row: dict, push_to_sheet: bool = True) -> BrokerAccount:
     """Stores (or updates) a verified Exness account with its client UID and MT5 ID."""
     mt5_id     = str(row.get("client_account"))
     client_uid = str(row.get("client_uid") or "") or None
@@ -185,13 +196,10 @@ def save_verified_account(db: Session, row: dict) -> BrokerAccount:
     except IntegrityError:
         db.rollback()  # stored concurrently — fall through to the existing row
     else:
-        trigger_sheet_sync("exness", mt5_id, "", client_uid=client_uid or "", mt5_id=mt5_id, extra_data={
-            "client_uid":   client_uid or "",
-            "mt5_id":       mt5_id,
-            "account_type": row.get("client_account_type") or "",
-            "platform":     row.get("platform") or "",
-            "created":      row.get("client_account_created") or "",
-        })
+        if push_to_sheet:
+            fields = sheet_fields(row)
+            trigger_sheet_sync("exness", mt5_id, "", extra_data=fields,
+                               client_uid=fields["client_uid"], mt5_id=mt5_id)
 
     return db.query(BrokerAccount).filter(
         BrokerAccount.mt5_id == mt5_id,
@@ -210,7 +218,7 @@ async def sync_all_exness_accounts(bot: Bot | None = None) -> str:
         return "Exness account sync: API call failed, nothing synced."
 
     db = SessionLocal()
-    added = 0
+    new_rows = []
     try:
         for row in rows:
             mt5_id = str(row.get("client_account") or "")
@@ -220,13 +228,35 @@ async def sync_all_exness_accounts(bot: Bot | None = None) -> str:
                 BrokerAccount.mt5_id == mt5_id,
                 BrokerAccount.broker == "exness",
             ).first() is not None
-            save_verified_account(db, row)       # also pushes new rows to the sheet
-            added += not existed
+            save_verified_account(db, row, push_to_sheet=False)
+            if not existed:
+                new_rows.append(row)
     finally:
         db.close()
 
-    logger.info(f"[exness-sync] {len(rows)} accounts checked, {added} new")
-    return f"Exness account sync: {len(rows)} accounts checked, {added} new."
+    # Sent one at a time and awaited: fire-and-forget tasks are dropped when the run ends,
+    # and Apps Script rejects a burst of parallel requests.
+    sent = await push_rows_to_sheet(new_rows)
+
+    logger.info(f"[exness-sync] {len(rows)} accounts checked, {len(new_rows)} new, {sent} added to the sheet")
+    result = f"Exness account sync: {len(rows)} accounts checked, {len(new_rows)} new, {sent} added to the sheet."
+    if sent < len(new_rows):
+        result += f" {len(new_rows) - sent} could not be written to the sheet — see the logs."
+    return result
+
+
+async def push_rows_to_sheet(rows: list, delay: float = 0.3) -> int:
+    """Appends each account to Google Sheets, one at a time. Returns how many were written."""
+    if not rows or not GOOGLE_SHEETS_WEBHOOK_URL:
+        return 0
+    sent = 0
+    for row in rows:
+        fields = sheet_fields(row)
+        if await append_to_sheet("exness", fields["mt5_id"], "", fields,
+                                 client_uid=fields["client_uid"], mt5_id=fields["mt5_id"]):
+            sent += 1
+        await asyncio.sleep(delay)
+    return sent
 
 
 def _parse_date(value) -> datetime | None:
@@ -424,11 +454,15 @@ async def run_exness_inactivity_check(bot: Bot, dry_run: bool = EXNESS_KICK_DRY_
             return report
 
         first_reminder = EXNESS_REMINDER_DAYS[0] if EXNESS_REMINDER_DAYS else EXNESS_INACTIVITY_DAYS
-        active, waiting, reminders_due, inactive = [], [], [], []
+        active, exempt, waiting, reminders_due, inactive = [], [], [], [], []
         for member in members:
             ts = last_trade.get(member.telegram_id)
             if ts and (member.last_trade_date is None or ts > member.last_trade_date):
                 member.last_trade_date = ts
+
+            if is_kick_exempt(member):
+                exempt.append(member)
+                continue
 
             days = _inactive_days(member, today)
             if days < first_reminder:
@@ -460,6 +494,7 @@ async def run_exness_inactivity_check(bot: Bot, dry_run: bool = EXNESS_KICK_DRY_
         lines += [
             f"Active Exness members checked: <b>{len(members)}</b>",
             f"Active (inactive under {first_reminder} days): {len(active)}",
+            f"Exempt (never reminded or removed): {len(exempt)}",
             f"Reminders {'due' if dry_run else 'sent'}: "
             + " · ".join(f"{d}-day: {stage_counts[d]}" for d in EXNESS_REMINDER_DAYS)
             + (f" (could not deliver: {undelivered})" if undelivered else ""),

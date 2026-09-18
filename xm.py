@@ -5,8 +5,8 @@ XM Partners Trade Statistics API and the daily inactivity check.
 
 Every day at 01:00 IST, for each active XM member:
   • days inactive = days since the latest of: last XM trade, join date, XM_KICK_START_DATE
-  • at XM_REMINDER_DAYS (20 / 25 / 30) they get a reminder DM
-  • after XM_INACTIVITY_DAYS (30), i.e. on day 31, they are removed from the group (ban + immediate unban,
+  • at XM_REMINDER_DAYS (7 / 12 / 15) they get a reminder DM
+  • after XM_INACTIVITY_DAYS (15), i.e. on day 16, they are removed from the group (ban + immediate unban,
     so they can rejoin after trading) and marked inactive
 A report is sent to INACTIVITY_REPORT_TELEGRAM_IDS.
 """
@@ -24,6 +24,7 @@ from bot import _group_id
 from config import (
     XM_API_KEY, XM_INACTIVITY_DAYS, XM_KICK_START_DATE, XM_REMINDER_DAYS, XM_KICK_DRY_RUN,
     XM_KICK_MAX_RATIO, INACTIVITY_REPORT_TELEGRAM_IDS,
+    KICK_EXEMPT_TELEGRAM_IDS, KICK_EXEMPT_USERNAMES,
 )
 from database import SessionLocal, TelegramMember, get_ist_time
 
@@ -116,6 +117,13 @@ async def check_recent_xm_trade(account_id: str) -> tuple[bool | None, datetime 
 # ═════════════════════════════════════════════════════════════════════════════
 # MEMBER MESSAGES
 # ═════════════════════════════════════════════════════════════════════════════
+
+def is_kick_exempt(member: TelegramMember) -> bool:
+    """True for admins and staff listed in KICK_EXEMPT_TELEGRAM_IDS (by Telegram ID or @username)."""
+    if str(member.telegram_id) in KICK_EXEMPT_TELEGRAM_IDS:
+        return True
+    return (member.telegram_username or "").lstrip("@").lower() in KICK_EXEMPT_USERNAMES
+
 
 def _plural(n: int, word: str) -> str:
     return f"{n} {word}" if n == 1 else f"{n} {word}s"
@@ -305,13 +313,17 @@ async def run_xm_inactivity_check(bot: Bot, dry_run: bool = XM_KICK_DRY_RUN) -> 
         ).all()
 
         first_reminder = XM_REMINDER_DAYS[0] if XM_REMINDER_DAYS else XM_INACTIVITY_DAYS
-        active, waiting, reminders_due, inactive = [], [], [], []
+        active, exempt, waiting, reminders_due, inactive = [], [], [], [], []
         for member in members:
             account = str(member.mt5_id or member.account_id).strip()
             if account in last_trade:
                 ts = last_trade[account] or now
                 if member.last_trade_date is None or ts > member.last_trade_date:
                     member.last_trade_date = ts
+
+            if is_kick_exempt(member):
+                exempt.append(member)
+                continue
 
             days = _inactive_days(member, today)
             if days < first_reminder:
@@ -343,6 +355,7 @@ async def run_xm_inactivity_check(bot: Bot, dry_run: bool = XM_KICK_DRY_RUN) -> 
         lines += [
             f"Active XM members checked: <b>{len(members)}</b>",
             f"Active (inactive under {first_reminder} days): {len(active)}",
+            f"Exempt (never reminded or removed): {len(exempt)}",
             f"Reminders {'due' if dry_run else 'sent'}: "
             + " · ".join(f"{d}-day: {stage_counts[d]}" for d in XM_REMINDER_DAYS)
             + (f" (could not deliver: {undelivered})" if undelivered else ""),
