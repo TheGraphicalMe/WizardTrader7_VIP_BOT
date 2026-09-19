@@ -22,7 +22,7 @@ from telegram.ext import (
 )
 from telegram.error import TelegramError
 
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_GROUP_ID, SUPPORTED_BROKERS, ALLOWED_USERS, BROKER_AFFILIATE_INFO, SMART_AI_FORM_URL, SMART_AI_WEBSITE_URL
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_GROUP_ID, SUPPORTED_BROKERS, ALLOWED_USERS, BROKER_AFFILIATE_INFO, SMART_AI_FORM_URL, SMART_AI_WEBSITE_URL, WINPRO_MIN_DEPOSIT_USD
 from database import SessionLocal, BrokerAccount, TelegramMember, PendingVerification, TelegramUser
 
 logger = logging.getLogger(__name__)
@@ -745,7 +745,10 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                 ).first()
 
         # ── 1.6 Dynamic check for Winpro ──────────────────────────────────────
-        if not account and broker == "winpro":
+        # Runs even when the account is already in the DB: the 3-hourly sync stores every
+        # account under our IB regardless of deposits, so a DB hit alone would let an
+        # account through the minimum-deposit gate.
+        if broker == "winpro":
             await update.message.reply_text("⏳ Checking Winpro systems for your account and deposits, please wait...")
             from winpro import verify_winpro_account
             is_valid, reason = await verify_winpro_account(account_id, db)
@@ -773,11 +776,15 @@ async def enter_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                         reply_markup=InlineKeyboardMarkup([[batch_button], [smart_ai_website_button]])
                     )
                 elif reason.startswith("insufficient_deposit"):
-                    current_deposit = reason.split(":")[1]
+                    try:
+                        current_deposit = f"{float(reason.split(':')[1]):,.2f}"
+                    except ValueError:
+                        current_deposit = reason.split(":")[1]
+                    required = f"{WINPRO_MIN_DEPOSIT_USD:,.2f}"
                     await update.message.reply_text(
                         "❌ *Verification Failed: Insufficient Deposits*\n\n"
                         f"Your MT5 account `{account_id}` is correctly registered under us, but your total successful deposits are currently **${current_deposit}**.\n\n"
-                        "**Requirement:** You need a cumulative deposit of **at least $50** to join the Active Traders Community.\n\n"
+                        f"**Requirement:** You need a cumulative deposit of **at least ${required}** to join the Active Traders Community.\n\n"
                         "Once you have deposited the required amount, wait a few minutes for it to be approved, then try again.\n\n"
                         "Send /start to try again.",
                         parse_mode="Markdown",

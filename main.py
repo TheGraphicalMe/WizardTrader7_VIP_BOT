@@ -89,6 +89,9 @@ async def lifespan(app: FastAPI):
         import exness
         kick_jobs.append((exness.SYNC_JOB_NAME, exness.sync_all_exness_accounts))
         kick_jobs.append((exness.JOB_NAME, exness.run_exness_inactivity_check))
+    if "winpro" in SUPPORTED_BROKERS:
+        import winpro
+        kick_jobs.append((winpro.JOB_NAME, winpro.run_winpro_inactivity_check))
     kick_task = asyncio.create_task(inactivity_scheduler(_bot_app.bot, kick_jobs))
 
     # Register Telegram webhook or start polling if local

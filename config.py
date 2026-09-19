@@ -37,6 +37,26 @@ VANTAGE_KICK_MAX_RATIO = float(os.getenv("VANTAGE_KICK_MAX_RATIO", "0.9"))
 
 # Winpro API Credentials
 WINPRO_API_KEY = os.getenv("WINPRO_API_KEY", "")
+# Cumulative successful deposits (USD) an MT5 account needs before it can claim VIP access.
+WINPRO_MIN_DEPOSIT_USD = float(os.getenv("WINPRO_MIN_DEPOSIT_USD", "50"))
+# The MT5 history endpoint rejects a request that omits master_password, but never checks the
+# value — the IB relationship is what the server actually verifies (it returns belongs_to_ib),
+# exactly as the API docs describe. Any non-empty string satisfies the field. If Winpro ever
+# starts validating it, history reads fail closed and the kick skips those members instead of
+# removing them, and a real value can be supplied here.
+WINPRO_MASTER_PASSWORD = os.getenv("WINPRO_MASTER_PASSWORD", "-").strip() or "-"
+
+# ── Winpro Inactivity Kick ──────────────────────────────────────────────────
+# Same rules as XM; runs daily at 01:00 IST. Activity = a closed deal in the account's MT5 history.
+WINPRO_INACTIVITY_DAYS = int(os.getenv("WINPRO_INACTIVITY_DAYS", "15"))
+WINPRO_KICK_START_DATE = date.fromisoformat(os.getenv("WINPRO_KICK_START_DATE", "2026-09-18").strip())
+WINPRO_REMINDER_DAYS = sorted(
+    d for d in (int(x) for x in os.getenv("WINPRO_REMINDER_DAYS", "7,12,15").split(",") if x.strip())
+    if 0 < d <= WINPRO_INACTIVITY_DAYS
+)
+# When true, the daily job only reports — no reminders sent, nobody removed.
+WINPRO_KICK_DRY_RUN   = os.getenv("WINPRO_KICK_DRY_RUN", "false").strip().lower() == "true"
+WINPRO_KICK_MAX_RATIO = float(os.getenv("WINPRO_KICK_MAX_RATIO", "0.9"))
 
 # XM Partners API (Trade Statistics) — used for the inactivity kick
 XM_API_KEY = os.getenv("XM_API_KEY", "").strip()
@@ -114,14 +134,14 @@ BROKER_AFFILIATE_INFO = {
     },
 }
 
-# Canonical list of supported broker slugs (Exness, Delta, and Winpro temporarily removed)
+# Canonical list of supported broker slugs (Delta temporarily removed)
 SUPPORTED_BROKERS = ["xm"]
 if VANTAGE_USER_ID and VANTAGE_SECRET:
     SUPPORTED_BROKERS.append("vantage")
 if EXNESS_LOGIN and EXNESS_PASSWORD:
     SUPPORTED_BROKERS.append("exness")
-# if WINPRO_API_KEY:
-#     SUPPORTED_BROKERS.append("winpro")
+if WINPRO_API_KEY:
+    SUPPORTED_BROKERS.append("winpro")
 
 # ── App ───────────────────────────────────────────────────────────────────────
 APP_BASE_URL  = os.getenv("APP_BASE_URL", "http://localhost:8000")
